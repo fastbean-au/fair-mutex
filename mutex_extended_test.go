@@ -1,0 +1,331 @@
+package fairmutex
+
+import (
+	"math/rand"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+// === Extended Test Suite ===
+
+func TestMutexFairness_ReadLocks(t *testing.T) {
+	maxQueueSize := 100
+	maxBatchSize := 10
+
+	m := New(t.Context(),
+		WithMaxReadQueueSize(maxQueueSize),
+		WithMaxReadBatchSize(maxBatchSize),
+	)
+
+	var wg sync.WaitGroup
+	order := make([]time.Time, maxQueueSize)
+
+	// Get and hold a lock while we fill the queue
+	m.Lock()
+
+	wg.Add(maxQueueSize)
+
+	for i := range maxQueueSize {
+		go func() {
+			defer wg.Done()
+
+			m.RLock()
+			defer m.RUnlock()
+
+			// Record order
+			order[i] = time.Now()
+
+			// delay here for one record
+			if i%10 == 9 {
+				<-time.After(time.Second)
+			}
+		}()
+
+		// Ensure that the queueing order is correct
+		<-time.After(time.Millisecond * 5)
+	}
+
+	m.Unlock()
+
+	wg.Wait()
+
+	// Check that readers are processed in roughly FIFO order within batches
+	outOfOrder := 0
+
+	for i := range 9 {
+		i1 := (i+1)*10 + 1
+		i2 := i * 10
+		if order[i1].Sub(order[i2]) < time.Millisecond*750 {
+			t.Logf("[%d] %s <=> [%d] %s\n", i1, order[i1].Format("15:04:05.999"), i2, order[i2].Format("15:04:05.999"))
+			outOfOrder++
+		}
+	}
+
+	if outOfOrder > 0 {
+		t.Errorf("Too many out-of-order readers (%d), expected <1 due to batching", outOfOrder)
+	}
+}
+
+func TestMutexFairness_WriteLocks(t *testing.T) {
+	m := New(t.Context(),
+		WithMaxWriteQueueSize(20),
+		WithMaxWriteBatchSize(5),
+	)
+
+	var wg sync.WaitGroup
+	var order []int64
+	var mu sync.Mutex
+	const numWriters = 25
+
+	m.RLock()
+
+	wg.Add(numWriters)
+
+	for i := range numWriters {
+		id := int64(i)
+		go func() {
+			defer wg.Done()
+
+			m.Lock()
+			defer m.Unlock()
+
+			mu.Lock()
+			order = append(order, id)
+			mu.Unlock()
+
+		}()
+
+		<-time.After(time.Millisecond * 5)
+	}
+
+	m.RUnlock()
+
+	wg.Wait()
+
+	if int64(len(order)) != numWriters {
+		t.Errorf("Expected %d writers, got %d", numWriters, len(order))
+	}
+
+	// Strict FIFO: writers should be in order
+	for i := 1; i < len(order); i++ {
+		if order[i] != order[i-1]+1 {
+			t.Errorf("Write lock order broken at index %d: %d -> %d", i, order[i-1], order[i])
+		}
+	}
+}
+
+func TestHighVolume_ReadContention(t *testing.T) {
+	m := New(t.Context(),
+		WithMaxReadQueueSize(2048),
+		WithMaxReadBatchSize(256),
+	)
+
+	const numReaders = 10_000
+	var wg sync.WaitGroup
+	var active int32
+	var maxActive int32
+
+	wg.Add(numReaders)
+	start := time.Now()
+
+	for i := 0; i < numReaders; i++ {
+		go func() {
+			defer wg.Done()
+			m.RLock()
+			defer m.RUnlock()
+
+			curr := atomic.AddInt32(&active, 1)
+			if curr > atomic.LoadInt32(&maxActive) {
+				atomic.CompareAndSwapInt32(&maxActive, atomic.LoadInt32(&maxActive), curr)
+			}
+			atomic.AddInt32(&active, -1)
+
+			// Simulate work
+			time.Sleep(time.Duration(rand.Intn(5)) * time.Microsecond)
+		}()
+	}
+
+	wg.Wait()
+
+	duration := time.Since(start)
+
+	t.Logf("10k readers completed in %v, max concurrent: %d", duration, maxActive)
+
+	if maxActive > 256 {
+		t.Errorf("Max concurrent readers %d exceeds batch size 256", maxActive)
+	}
+
+	if maxActive == 0 {
+		t.Error("No readers were active")
+	}
+}
+
+func TestHighVolume_WriteContention(t *testing.T) {
+	m := New(t.Context(),
+		WithMaxWriteQueueSize(512),
+		WithMaxWriteBatchSize(64),
+	)
+
+	const numWriters = 5000
+	var wg sync.WaitGroup
+	var counter int64
+	var maxConcurrent int32
+
+	wg.Add(numWriters)
+
+	start := time.Now()
+
+	for range numWriters {
+		go func() {
+			defer wg.Done()
+
+			m.Lock()
+			defer m.Unlock()
+
+			curr := atomic.AddInt32(&maxConcurrent, 1)
+			if curr > 1 {
+				t.Error("Write lock allows concurrent writers")
+			}
+
+			atomic.AddInt32(&maxConcurrent, -1)
+
+			atomic.AddInt64(&counter, 1)
+
+			time.Sleep(10 * time.Microsecond)
+		}()
+	}
+
+	wg.Wait()
+
+	duration := time.Since(start)
+
+	if counter != numWriters {
+		t.Errorf("Expected %d writes, got %d", numWriters, counter)
+	}
+
+	t.Logf("5k writers completed in %v", duration)
+}
+
+func TestMixedReadWrite_StarvationPrevention(t *testing.T) {
+	m := New(t.Context(),
+		WithMaxReadQueueSize(512),
+		WithMaxReadBatchSize(64),
+		WithMaxWriteQueueSize(64),
+		WithMaxWriteBatchSize(1), // Only one writer at a time
+	)
+
+	var wg sync.WaitGroup
+	var readCount, writeCount atomic.Int32
+	writerDone := make(chan struct{})
+
+	// Start continuous readers
+	for range 50 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			for {
+				select {
+				case <-writerDone:
+					return
+				default:
+					m.RLock()
+					readCount.Add(1)
+					time.Sleep(1 * time.Millisecond)
+					m.RUnlock()
+				}
+			}
+		}()
+	}
+
+	// Let readers warm up
+	time.Sleep(50 * time.Millisecond)
+
+	// Now inject a writer
+	start := time.Now()
+
+	m.Lock()
+	writeCount.Add(1)
+	time.Sleep(10 * time.Millisecond)
+	m.Unlock()
+
+	writerDuration := time.Since(start)
+
+	close(writerDone)
+
+	wg.Wait()
+
+	if writerDuration > 150*time.Millisecond {
+		t.Errorf("Writer starved for %.2fms — possible reader starvation", writerDuration.Seconds()*1000)
+	}
+
+	if writeCount.Load() != 1 {
+		t.Error("Writer did not execute")
+	}
+
+	if readCount.Load() == 0 {
+		t.Error("No readers executed")
+	}
+
+	t.Logf("Writer acquired lock in %.2fms under heavy read load", writerDuration.Seconds()*1000)
+}
+
+func TestBatchedReadProcessing(t *testing.T) {
+	m := New(t.Context(),
+		WithMaxReadQueueSize(10),
+		WithMaxReadBatchSize(3),
+	)
+
+	var wg sync.WaitGroup
+	var order = []int{}
+	var orderMu sync.Mutex
+
+	const numReaders = 15
+
+	// Inject a writer to separate batches
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+
+		m.Lock()
+
+		orderMu.Lock()
+		order = append(order, 999)
+		orderMu.Unlock()
+
+		time.Sleep(10 * time.Millisecond)
+		m.Unlock()
+	}()
+
+	m.RLock()
+
+	wg.Add(numReaders)
+	for i := range numReaders {
+		id := i
+		go func() {
+			defer wg.Done()
+
+			m.RLock()
+			defer m.RUnlock()
+
+			orderMu.Lock()
+			order = append(order, id)
+			orderMu.Unlock()
+
+			time.Sleep(time.Millisecond * time.Duration(id))
+		}()
+	}
+
+	m.RUnlock()
+
+	wg.Wait()
+
+	if order[0] == 999 {
+		t.Error("Did not expect the write lock at the start")
+	}
+
+	if order[len(order)-1] == 999 {
+		t.Error("Did not expect the write lock at the end")
+	}
+}

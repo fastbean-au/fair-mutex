@@ -1,0 +1,128 @@
+package fairmutex
+
+import (
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+func TestMutexBasicOperations(t *testing.T) {
+	t.Run("TestNew", func(t *testing.T) {
+		m := New(t.Context())
+		if m == nil || !m.initialised {
+			t.Fatal("New() did not return an initialized mutex")
+		}
+	})
+
+	t.Run("TestUninitializedMutex", func(t *testing.T) {
+		m := &Mutex{} // Not initialized via New()
+
+		// Expect panics for standard methods
+		assertPanic(t, "Lock", func() { m.Lock() })
+		assertPanic(t, "Unlock", func() { m.Unlock() })
+		assertPanic(t, "RLock", func() { m.RLock() })
+		assertPanic(t, "RUnlock", func() { m.RUnlock() })
+	})
+
+	t.Run("TestWriteLock", func(t *testing.T) {
+		m := New(t.Context())
+
+		var counter int32
+		var wg sync.WaitGroup
+
+		wg.Add(2)
+
+		// Two goroutines trying to increment counter with write lock
+		for range 2 {
+			go func() {
+				defer wg.Done()
+
+				m.Lock()
+				defer m.Unlock()
+
+				current := atomic.LoadInt32(&counter)
+				time.Sleep(10 * time.Millisecond) // Simulate work
+				atomic.StoreInt32(&counter, current+1)
+			}()
+		}
+
+		wg.Wait()
+
+		if counter != 2 {
+			t.Errorf("Expected counter to be 2, got %d", counter)
+		}
+	})
+
+	t.Run("TestReadLock", func(t *testing.T) {
+		m := New(t.Context())
+
+		var wg sync.WaitGroup
+
+		wg.Add(5)
+
+		// Multiple readers accessing shared resource
+		for range 5 {
+			go func() {
+				defer wg.Done()
+
+				m.RLock()
+				defer m.RUnlock()
+
+				time.Sleep(10 * time.Millisecond) // Simulate read
+			}()
+		}
+
+		wg.Wait()
+	})
+
+	t.Run("TestReadWriteExclusivity", func(t *testing.T) {
+		m := New(t.Context())
+
+		var counter int32
+		var wg sync.WaitGroup
+
+		wg.Add(6)
+
+		// One writer
+		go func() {
+			defer wg.Done()
+
+			m.Lock()
+			defer m.Unlock()
+
+			atomic.AddInt32(&counter, 10)
+			time.Sleep(50 * time.Millisecond) // Hold lock
+		}()
+
+		// Multiple readers
+		for range 5 {
+			go func() {
+				defer wg.Done()
+
+				m.RLock()
+				defer m.RUnlock()
+
+				_ = atomic.LoadInt32(&counter)
+			}()
+		}
+
+		wg.Wait()
+
+		if counter != 10 {
+			t.Errorf("Expected counter to be 10, got %d", counter)
+		}
+	})
+
+}
+
+// Helper function to assert panic
+func assertPanic(t *testing.T, name string, f func()) {
+	t.Helper()
+	defer func() {
+		if r := recover(); r == nil {
+			t.Errorf("%s: expected panic but none occurred", name)
+		}
+	}()
+	f()
+}

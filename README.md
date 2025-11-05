@@ -1,9 +1,8 @@
 # Fair-Mutex
 
-
-<p align="center">
-  <img src="logo.png" title="fair-mutex />
-</p>
+<div align="center">
+  <img src="logo.png" alt="Fair-Mutex" width="200"/>
+</div>
 
 **fair-mutex** is a pure-Go implementation of a fair RW mutex; that is, a mutex where write locks will not be prevented in a high volume read-lock use case. This is perhaps a fairly narrow use-case; if you don't need this then consider using [go-lock](https://github.com/viney-shih/go-lock) if the built-in `sync.RWMutex` does not meet your needs.
 

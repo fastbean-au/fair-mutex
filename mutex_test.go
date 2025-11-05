@@ -1,6 +1,7 @@
 package fairmutex
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -114,6 +115,31 @@ func TestMutexBasicOperations(t *testing.T) {
 		}
 	})
 
+	t.Run("TestPanicUnlockingWithoutALock", func(t *testing.T) {
+		m := New(t.Context())
+
+		// Expect panics for standard methods
+		assertPanic(t, "Unlock", func() { m.Unlock() })
+		assertPanic(t, "RUnlock", func() { m.RUnlock() })
+	})
+
+	t.Run("TestAfterCleanup", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		m := New(ctx)
+
+		<-time.After(time.Millisecond * 10)
+
+		cancel()
+
+		<-time.After(time.Millisecond * 10)
+
+		// Expect panics for standard methods
+		assertPanic(t, "Lock", func() { m.Lock() })
+		assertPanic(t, "Unlock", func() { m.Unlock() })
+		assertPanic(t, "RLock", func() { m.RLock() })
+		assertPanic(t, "RUnlock", func() { m.RUnlock() })
+	})
+
 }
 
 // Helper function to assert panic
@@ -124,5 +150,6 @@ func assertPanic(t *testing.T, name string, f func()) {
 			t.Errorf("%s: expected panic but none occurred", name)
 		}
 	}()
+
 	f()
 }

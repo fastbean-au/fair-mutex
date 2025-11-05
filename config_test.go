@@ -14,8 +14,8 @@ func TestMutexConfigDefaultsAndOverrides(t *testing.T) {
 			expected: config{
 				sharedMaxBatchSize:    1024,
 				sharedMaxQueueSize:    1024,
-				exclusiveMaxBatchSize: 128,
-				exclusiveMaxQueueSize: 128,
+				exclusiveMaxBatchSize: 32,
+				exclusiveMaxQueueSize: 256,
 				metricName:            "go.mutex.wait.seconds",
 			},
 		},
@@ -25,8 +25,8 @@ func TestMutexConfigDefaultsAndOverrides(t *testing.T) {
 			expected: config{
 				sharedMaxBatchSize:    50,
 				sharedMaxQueueSize:    100,
-				exclusiveMaxBatchSize: 128,
-				exclusiveMaxQueueSize: 128,
+				exclusiveMaxBatchSize: 32,
+				exclusiveMaxQueueSize: 256,
 				metricName:            "go.mutex.wait.seconds",
 			},
 		},
@@ -36,8 +36,8 @@ func TestMutexConfigDefaultsAndOverrides(t *testing.T) {
 			expected: config{
 				sharedMaxBatchSize:    100,
 				sharedMaxQueueSize:    100,
-				exclusiveMaxBatchSize: 128,
-				exclusiveMaxQueueSize: 128,
+				exclusiveMaxBatchSize: 32,
+				exclusiveMaxQueueSize: 256,
 				metricName:            "go.mutex.wait.seconds",
 			},
 		},
@@ -47,8 +47,8 @@ func TestMutexConfigDefaultsAndOverrides(t *testing.T) {
 			expected: config{
 				sharedMaxBatchSize:    64,
 				sharedMaxQueueSize:    64,
-				exclusiveMaxBatchSize: 128,
-				exclusiveMaxQueueSize: 128,
+				exclusiveMaxBatchSize: 32,
+				exclusiveMaxQueueSize: 256,
 				metricName:            "go.mutex.wait.seconds",
 			},
 		},

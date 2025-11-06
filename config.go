@@ -62,7 +62,8 @@ func WithMaxReadBatchSize(length int) Option {
 // obtain a lock that are waiting, but the number during which we can guarantee
 // order. This setting will effect the memory required.
 //
-// Set to 1 if this mutex will only be used as a write-only mutex.
+// Set to 1 if this mutex will only be used as a write-only mutex  (but you
+// probably don't want to do that).
 //
 // Defaults to 1024.
 func WithMaxReadQueueSize(length int) Option {
@@ -78,7 +79,7 @@ func WithMaxReadQueueSize(length int) Option {
 //
 // This value cannot be larger than the MaxWriteQueueSize.
 //
-// Defaults to 256.
+// Defaults to 32.
 func WithMaxWriteBatchSize(length int) Option {
 	return func(c *config) {
 		c.exclusiveMaxBatchSize = length
@@ -90,7 +91,7 @@ func WithMaxWriteBatchSize(length int) Option {
 // obtain a lock that are waiting, but the number during which we can guarantee
 // order. This setting will effect the memory required.
 //
-// Defaults to 32.
+// Defaults to 256.
 func WithMaxWriteQueueSize(length int) Option {
 	return func(c *config) {
 		c.exclusiveMaxQueueSize = length

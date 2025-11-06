@@ -1,7 +1,6 @@
 package fairmutex
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -9,11 +8,8 @@ import (
 )
 
 // Benchmark: Read lock
-func BenchmarkFairMutex_Read(b *testing.B) {
-	m := New(b.Context(),
-		WithMaxReadQueueSize(1024),
-		WithMaxReadBatchSize(128),
-	)
+func BenchmarkSyncRWMutex_Read(b *testing.B) {
+	m := new(sync.RWMutex)
 
 	b.ResetTimer()
 
@@ -24,11 +20,8 @@ func BenchmarkFairMutex_Read(b *testing.B) {
 }
 
 // Benchmark: Write lock
-func BenchmarkFairMutex_Write(b *testing.B) {
-	m := New(b.Context(),
-		WithMaxReadQueueSize(1024),
-		WithMaxReadBatchSize(128),
-	)
+func BenchmarkSyncRWMutex_Write(b *testing.B) {
+	m := new(sync.RWMutex)
 
 	b.ResetTimer()
 
@@ -39,10 +32,10 @@ func BenchmarkFairMutex_Write(b *testing.B) {
 }
 
 // Benchmark: Write under read pressure
-func BenchmarkFairMutex_Write_UnderReadLoadWithGaps(b *testing.B) {
-	ctx, cancel := context.WithCancel(context.Background())
+func BenchmarkSyncRW_Write_UnderReadLoadWithGaps(b *testing.B) {
+	ctx := b.Context()
 
-	m := New(b.Context())
+	m := new(sync.RWMutex)
 
 	// Keep readers running
 	go func() {
@@ -71,14 +64,12 @@ func BenchmarkFairMutex_Write_UnderReadLoadWithGaps(b *testing.B) {
 		m.Lock()
 		m.Unlock() //nolint:staticcheck
 	}
-
-	cancel()
 }
 
-func BenchmarkFairMutex_Write_UnderReadAndWriteLoad(b *testing.B) {
-	ctx, cancel := context.WithCancel(context.Background())
+func BenchmarkSyncRW_Write_UnderReadAndWriteLoad(b *testing.B) {
+	ctx := b.Context()
 
-	m := New(b.Context())
+	m := new(sync.RWMutex)
 
 	// Keep readers running
 	go func() {
@@ -195,6 +186,4 @@ func BenchmarkFairMutex_Write_UnderReadAndWriteLoad(b *testing.B) {
 			}
 		})
 	}
-
-	cancel()
 }

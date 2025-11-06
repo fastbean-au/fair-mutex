@@ -2,6 +2,7 @@ package fairmutex
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -353,15 +354,9 @@ func (m *Mutex) Unlock() {
 	m.releaseExclusive <- struct{}{}
 }
 
-// A Locker represents an object that can be locked and unlocked.
-type Locker interface {
-	Lock()
-	Unlock()
-}
-
 // RLocker - returns a [Locker] interface that implements the [Locker.Lock] and
 // [Locker.Unlock] methods by calling m.RLock and m.RUnlock.
-func (m *Mutex) RLocker() Locker {
+func (m *Mutex) RLocker() sync.Locker {
 	return (*rlocker)(m)
 }
 

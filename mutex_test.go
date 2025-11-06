@@ -25,6 +25,8 @@ func TestMutexBasicOperations(t *testing.T) {
 		assertPanic(t, "Unlock", func() { m.Unlock() })
 		assertPanic(t, "RLock", func() { m.RLock() })
 		assertPanic(t, "RUnlock", func() { m.RUnlock() })
+		assertPanic(t, "TryLock", func() { m.TryLock() })
+		assertPanic(t, "TryRLock", func() { m.TryRLock() })
 	})
 
 	t.Run("TestWriteLock", func(t *testing.T) {
@@ -128,6 +130,46 @@ func TestMutexBasicOperations(t *testing.T) {
 		assertPanic(t, "RUnlock", func() { m.RUnlock() })
 	})
 
+	t.Run("TestAfterStop", func(t *testing.T) {
+		m := New()
+
+		<-time.After(time.Millisecond * 10)
+
+		m.Stop()
+
+		<-time.After(time.Millisecond * 10)
+
+		// Expect panics for standard methods
+		assertPanic(t, "Lock", func() { m.Lock() })
+		assertPanic(t, "Unlock", func() { m.Unlock() })
+		assertPanic(t, "RLock", func() { m.RLock() })
+		assertPanic(t, "RUnlock", func() { m.RUnlock() })
+		assertPanic(t, "TryLock", func() { m.TryLock() })
+		assertPanic(t, "TryRLock", func() { m.TryRLock() })
+	})
+
+	t.Run("TestStopAfterStop", func(t *testing.T) {
+		m := New()
+
+		<-time.After(time.Millisecond * 10)
+
+		m.Stop()
+
+		<-time.After(time.Millisecond * 10)
+
+		m.Stop()
+
+		<-time.After(time.Millisecond * 10)
+
+		// Expect panics for standard methods
+		assertPanic(t, "Lock", func() { m.Lock() })
+		assertPanic(t, "Unlock", func() { m.Unlock() })
+		assertPanic(t, "RLock", func() { m.RLock() })
+		assertPanic(t, "RUnlock", func() { m.RUnlock() })
+		assertPanic(t, "TryLock", func() { m.TryLock() })
+		assertPanic(t, "TryRLock", func() { m.TryRLock() })
+	})
+
 	t.Run("TestAfterCleanup", func(t *testing.T) {
 		m := New()
 
@@ -142,6 +184,48 @@ func TestMutexBasicOperations(t *testing.T) {
 		assertPanic(t, "Unlock", func() { m.Unlock() })
 		assertPanic(t, "RLock", func() { m.RLock() })
 		assertPanic(t, "RUnlock", func() { m.RUnlock() })
+		assertPanic(t, "TryLock", func() { m.TryLock() })
+		assertPanic(t, "TryRLock", func() { m.TryRLock() })
+	})
+
+	t.Run("TestRLocker", func(t *testing.T) {
+		m := New()
+		defer m.Stop()
+
+		<-time.After(time.Millisecond * 10)
+
+		locker := m.RLocker()
+
+		if locker == nil {
+			t.Log("locker is nil")
+			t.FailNow()
+		}
+
+		var counter int32
+		var wg sync.WaitGroup
+
+		wg.Add(2)
+
+		// Two goroutines trying to increment counter with write lock
+		for range 2 {
+			go func() {
+				defer wg.Done()
+
+				locker.Lock()
+				defer locker.Unlock()
+
+				current := atomic.LoadInt32(&counter)
+				time.Sleep(10 * time.Millisecond) // Simulate work
+				atomic.StoreInt32(&counter, current+1)
+			}()
+		}
+
+		wg.Wait()
+
+		if counter != 2 {
+			t.Errorf("Expected counter to be 2, got %d", counter)
+		}
+
 	})
 
 }

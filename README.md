@@ -135,7 +135,7 @@ func main() {
 Side-by-side comparison of `fair-mutex` and `sync.RWMutex`.
 
 | Test | Operations | NS/Operation | Memory Bytes/Op | Memory Allocs/Op |
-|------|------------|         ---: |            ---: |             ---: |
+|------|       ---: |         ---: |            ---: |             ---: |
 |Fair-Mutex Read|1,371,511|874.7|336|6 |
 |SyncRWMutex Read|86,194,485 |13.89|0|0 |
 ||||||
@@ -173,4 +173,4 @@ Side-by-side comparison of `fair-mutex` and `sync.RWMutex`.
 |SyncRWMutex UnderReadAndWriteLoad/WriteLocks=9|100|10,664,838|11,401|145 |
 ||||||
 |Fair-Mutex UnderReadAndWriteLoad/WriteLocks=10|922|1,243,630|6533|115 |
-|SyncRWMutex UnderReadAndWriteLoad/WriteLocks=10|100|11,763,149|12658|161 |
+|SyncRWMutex UnderReadAndWriteLoad/WriteLocks=10|100|11,763,149|12,658|161 |

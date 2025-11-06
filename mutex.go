@@ -219,7 +219,7 @@ func (m *Mutex) cleanup() {
 // sync.RWMutex methods
 // -----------------------------------------------------------------------------
 
-// RLock locks the mutex for reading.
+// RLock - locks the mutex for reading.
 //
 // It should not be used for recursive read locking; a blocked Lock call
 // excludes new readers from acquiring the lock. See the documentation on the
@@ -245,7 +245,7 @@ func (m *Mutex) RLock() {
 	))
 }
 
-// TryRLock tries to lock rw for reading and reports whether it succeeded.
+// TryRLock - tries to lock rw for reading and reports whether it succeeded.
 //
 // Note that while correct uses of TryRLock do exist, they are rare, and use of
 // TryRLock is often a sign of a deeper problem in a particular use of mutexes.
@@ -270,7 +270,7 @@ func (m *Mutex) TryRLock() bool {
 	return true
 }
 
-// RUnlock undoes a single fairmutex.RLock call; it does not affect other
+// RUnlock - undoes a single fairmutex.RLock call; it does not affect other
 // simultaneous readers. It is a run-time error if rw is not locked for reading
 // on entry to RUnlock.
 func (m *Mutex) RUnlock() {
@@ -285,8 +285,8 @@ func (m *Mutex) RUnlock() {
 	m.releaseShared <- struct{}{}
 }
 
-// Lock locks the mutex for writing. If the mutex is already locked for reading
-// or writing, Lock blocks until the lock is available.
+// Lock - locks the mutex for writing. If the mutex is already locked for
+// reading or writing, Lock blocks until the lock is available.
 func (m *Mutex) Lock() {
 	if !m.initialised {
 		panic("attempt to use fair-mutex uninitialised")
@@ -308,7 +308,7 @@ func (m *Mutex) Lock() {
 	))
 }
 
-// TryLock tries to lock rw for writing and reports whether it succeeded.
+// TryLock - tries to lock rw for writing and reports whether it succeeded.
 //
 // Note that while correct uses of TryLock do exist, they are rare, and use of
 // TryLock is often a sign of a deeper problem in a particular use of mutexes.
@@ -334,8 +334,8 @@ func (m *Mutex) TryLock() bool {
 	return true
 }
 
-// Unlock unlocks rw for writing. It is a run-time error if rw is not locked for
-// writing on entry to Unlock.
+// Unlock - unlocks rw for writing. It is a run-time error if rw is not locked
+// for writing on entry to Unlock.
 //
 // As with Mutexes, a locked FairMutex is not associated with a particular
 // goroutine. One goroutine may fairmutex.RLock (fairmutex.Lock) a FairMutex and
@@ -359,7 +359,7 @@ type Locker interface {
 	Unlock()
 }
 
-// RLocker returns a [Locker] interface that implements the [Locker.Lock] and
+// RLocker - returns a [Locker] interface that implements the [Locker.Lock] and
 // [Locker.Unlock] methods by calling m.RLock and m.RUnlock.
 func (m *Mutex) RLocker() Locker {
 	return (*rlocker)(m)

@@ -4,6 +4,8 @@
   <img src="logo.png" alt="Fair-Mutex" width="200"/>
 </div>
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/fastbean-au/fair-mutex.svg)](https://pkg.go.dev/github.com/fastbean-au/fair-mutex)
+
 **fair-mutex** is a Go implementation of a fair RW mutex; that is, a mutex where write locks will not be prevented in a high volume read-lock use case. The larger the number of write locks required, the larger the performance benefit over `sync.RWMutex`. This is perhaps a fairly narrow use-case; if you don't need this then consider using [go-lock](https://github.com/viney-shih/go-lock) if the built-in `sync.RWMutex` or `sync.Mutex` do not meet your needs. To see if perhaps **fair-mutex** meets your needs, start by looking at the benchmark results. 
 
 This implementation can be used as *functional* a drop-in replacement for Go's [`sync.RWMutex`](https://pkg.go.dev/sync#RWMutex) or [`sync.Mutex`](https://pkg.go.dev/sync#Mutex) as at Go 1.25 (*Note:* the `New()` function must be called to initialise the mutex prior to use, and the `Stop()` method must be called in order to release the resources associated with the mutex. *NB*: calling any method on the mutex after calling `Stop()` will result in a panic).
@@ -12,39 +14,39 @@ The general principle on which **fair-mutex** operates is that locks are given i
 
 An OpenTelemetry (OTEL) metric is provided to record the lock wait times, allowing an evaluation of the effective performance of the mutex, and identification of problematic lock contention issues.
 
-**Caution**: like a `sync.Mutex` or a `sync.RWMutex`, **fair-mutex** cannot be safely copied.
+**Caution**: like a `sync.Mutex` or a `sync.RWMutex`, **fair-mutex** cannot be safely copied, unlike with `sync.Mutex` AND `sync.RWMutex`, **fair-mutex** cannot be copied at any time.
 
-### Configuration options
+## Configuration options
 
 **fair-mutex**  provides configurable read and write queue and batch size options, as well as an options for the metric name and default metric attributes.
 
-#### WithMaxReadBatchSize
+### WithMaxReadBatchSize
 The maximum batch size for read (also known as shared) locks. The batch size does not determine the number of calls to obtain a lock that are waiting, but the maximum number that will be processed in one locking cycle.
 
 This value cannot be larger than the MaxReadQueueSize.
 
 Defaults to the value of MaxReadQueueSize.
 
-#### WithMaxReadQueueSize
+### WithMaxReadQueueSize
 The maximum queue size for read (also known as shared) locks. The queue size does not determine the number of calls to obtain a lock that are waiting, but the number during which we can guarantee order. This setting will effect the memory required.
 
 Set to 1 if this mutex will only be used as a write-only mutex (but you probably don't want to do that).
 
 Defaults to 1024.
 
-#### WithMaxWriteBatchSize
+### WithMaxWriteBatchSize
 The maximum batch size for write (also known as exclusive) locks. The batch size does not determine the number of calls to obtain a lock that are waiting, but the maximum number that will be processed in one locking cycle.
 
 This value cannot be larger than the MaxWriteQueueSize.
 
 Defaults to 32.
 
-#### WithMaxWriteQueueSize
+### WithMaxWriteQueueSize
 The maximum queue size for write (also known as exclusive) locks. The queue size does not determine the number of calls to obtain a lock that are waiting, but the number during which we can guarantee order. This setting will effect the memory required.
 
 Defaults to 256.
 
-#### WithMetricAttributes
+### WithMetricAttributes
 A set of attributes with pre-set values to provide on every recording of the mutex lock wait time metric.
 
 WithMetricName - name for the metric.

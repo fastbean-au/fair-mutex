@@ -72,106 +72,33 @@ func BenchmarkSyncRW_Write_UnderReadAndWriteLoad(b *testing.B) {
 	m := new(sync.RWMutex)
 
 	// Keep readers running
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				m.RLock()
-
+	for i := range 5 {
+		go func() {
+			for {
+				<-time.After(time.Microsecond * time.Duration(i))
 				select {
 				case <-ctx.Done():
 					return
-				case <-time.After(time.Millisecond):
-					m.RUnlock()
+				default:
+					m.RLock()
+
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(time.Millisecond):
+						m.RUnlock()
+					}
 				}
 			}
-		}
-	}()
-
-	go func() {
-		<-time.After(time.Microsecond * 100)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				m.RLock()
-
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(time.Millisecond):
-					m.RUnlock()
-				}
-			}
-		}
-	}()
-
-	go func() {
-		<-time.After(time.Microsecond * 200)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				m.RLock()
-
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(time.Millisecond):
-					m.RUnlock()
-				}
-			}
-		}
-	}()
-
-	go func() {
-		<-time.After(time.Microsecond * 300)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				m.RLock()
-
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(time.Millisecond):
-					m.RUnlock()
-				}
-			}
-		}
-	}()
-
-	go func() {
-		<-time.After(time.Microsecond * 400)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				m.RLock()
-
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(time.Millisecond):
-					m.RUnlock()
-				}
-			}
-		}
-	}()
+		}()
+	}
 
 	time.Sleep(10 * time.Millisecond) // Warm up
 
 	b.ResetTimer()
 
 	for i := range 10 {
-		b.Run(fmt.Sprintf("writes=%d", i+1), func(b *testing.B) {
+		b.Run(fmt.Sprintf("WriteLocks=%d", i+1), func(b *testing.B) {
 			for n := 0; n < b.N; n++ {
 				wg := new(sync.WaitGroup)
 				wg.Add(i + 1)

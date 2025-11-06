@@ -132,6 +132,7 @@ func main() {
 
 ### Benchmarks
 
+```
 BenchmarkFairMutex_Read-8                                                1371511             874.7 ns/op             336 B/op          6 allocs/op
 BenchmarkSyncRWMutex_Read-8                                             86194485             13.89 ns/op               0 B/op          0 allocs/op
 
@@ -170,3 +171,4 @@ BenchmarkSyncRW_Write_UnderReadAndWriteLoad/writes=9-8                       100
 
 BenchmarkFairMutex_Write_UnderReadAndWriteLoad/writes=10-8                   922           1243630 ns/op            6533 B/op        115 allocs/op
 BenchmarkSyncRW_Write_UnderReadAndWriteLoad/writes=10-8                      100          11763149 ns/op           12658 B/op        161 allocs/op
+```

@@ -6,11 +6,13 @@
 
 **fair-mutex** is a Go implementation of a fair RW mutex; that is, a mutex where write locks will not be prevented in a high volume read-lock use case. The larger the number of write locks required, the larger the performance benefit over `sync.RWMutex`. This is perhaps a fairly narrow use-case; if you don't need this then consider using [go-lock](https://github.com/viney-shih/go-lock) if the built-in `sync.RWMutex` or `sync.Mutex` do not meet your needs. To see if perhaps **fair-mutex** meets your needs, start by looking at the benchmark results. 
 
-This implementation can be used as *functional* a drop-in replacement for Go's [`sync.RWMutex`](https://pkg.go.dev/sync#RWMutex) or [`sync.Mutex`](https://pkg.go.dev/sync#Mutex) as at Go 1.25 (*Note:* the `New()` method must be called to initialise the mutex prior to use, and the context used to create the mutex must be cancelled in order to release the resources associated with the mutex).
+This implementation can be used as *functional* a drop-in replacement for Go's [`sync.RWMutex`](https://pkg.go.dev/sync#RWMutex) or [`sync.Mutex`](https://pkg.go.dev/sync#Mutex) as at Go 1.25 (*Note:* the `New()` function must be called to initialise the mutex prior to use, and the `Stop()` method must be called in order to release the resources associated with the mutex. *NB*: calling any method on the mutex after calling `Stop()` will result in a panic).
 
 The general principle on which **fair-mutex** operates is that locks are given in batches alternating between write locks and read locks. The batch size is determined at the beginning of a locking cycle based on the number of requests for locks. Read locks are given concurrently for the entire batch, white write locks are given sequentially for the entire batch. While batches are being processed, both type of lock requests are queued. Batch sizes are simply the lesser of the number of locks queued of the lock type at the beginning of a cycle or the maximum size limit set for that lock type. So, in practice, what this means is that read locks are not automatically given if there is no write lock taken.
 
 An OpenTelemetry (OTEL) metric is provided to record the lock wait times, allowing an evaluation of the effective performance of the mutex, and identification of problematic lock contention issues.
+
+**Caution**: like a `sync.Mutex` or a `sync.RWMutex`, **fair-mutex** cannot be safely copied.
 
 ### Configuration options
 
@@ -61,7 +63,6 @@ go get github.com/fastbean-au/fair-mutex
 package main
 
 import (
-	"context"
 	"fmt"
 	"math/rand/v2"
 	"sync"
@@ -72,13 +73,7 @@ import (
 
 func main() {
 
-	// Create a context with a cancel function to use when creating the mutex.
-	// Calling cancel() will release the resources used by the mutex (i.e. it
-	// will end the go func and close the channels), preventing resource
-	// leakage.
-	ctx, cancel := context.WithCancel(context.Background())
-
-	mtx := fairmutex.New(ctx)
+	mtx := fairmutex.New()
 
 	mtx.Lock()
 	// Do something
@@ -126,7 +121,8 @@ func main() {
 
 	wg.Wait()
 
-	cancel()
+    // Stop the mutex to release the resources
+	mtx.Stop()
 }
 ```
 

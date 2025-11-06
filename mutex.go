@@ -18,11 +18,14 @@ type Mutex struct {
 	shared             chan chan struct{}
 	releaseExclusive   chan struct{}
 	releaseShared      chan struct{}
+	stopProcessing     chan struct{}
 	waitingOnExclusive atomic.Bool
 	waitingOnShared    atomic.Bool
 }
 
-func New(ctx context.Context, options ...Option) *Mutex {
+// New - returns a pointer to a new Mutex with the processing process already
+// running.
+func New(options ...Option) *Mutex {
 	cfg := getConfig(options...)
 
 	meter := otel.Meter("fair-mutex")
@@ -47,9 +50,10 @@ func New(ctx context.Context, options ...Option) *Mutex {
 		shared:           make(chan chan struct{}, cfg.sharedMaxQueueSize),
 		releaseExclusive: make(chan struct{}),
 		releaseShared:    make(chan struct{}, cfg.sharedMaxBatchSize),
+		stopProcessing:   make(chan struct{}),
 	}
 
-	go m.process(ctx)
+	go m.process()
 
 	return m
 }
@@ -60,8 +64,17 @@ const (
 	ExclusiveLockTaken
 )
 
+// Stop - causes the go func processing mutex requests to stop running and the
+// cleanup method to be called after that. Calling this function is required so
+// that resources are not leaked (e.g. zombie go processes).
+func (m *Mutex) Stop() {
+	if m.initialised {
+		m.stopProcessing <- struct{}{}
+	}
+}
+
 // process - handles the batching and granting of the lock requests
-func (m *Mutex) process(ctx context.Context) {
+func (m *Mutex) process() {
 	defer m.cleanup()
 
 	var loopInitLock chan struct{}
@@ -75,7 +88,7 @@ func (m *Mutex) process(ctx context.Context) {
 		case SharedLockTaken:
 			select {
 
-			case <-ctx.Done():
+			case <-m.stopProcessing:
 				return
 
 			case loopInitLock = <-m.exclusive:
@@ -92,7 +105,7 @@ func (m *Mutex) process(ctx context.Context) {
 		case ExclusiveLockTaken:
 			select {
 
-			case <-ctx.Done():
+			case <-m.stopProcessing:
 				return
 
 			case loopInitLock = <-m.shared:
@@ -112,7 +125,7 @@ func (m *Mutex) process(ctx context.Context) {
 		if lockTypeTaken == NoLockTaken {
 			select {
 
-			case <-ctx.Done():
+			case <-m.stopProcessing:
 				return
 
 			case loopInitLock = <-m.exclusive:
@@ -146,7 +159,7 @@ func (m *Mutex) process(ctx context.Context) {
 			// Wait for the shared locks to be returned
 			for range lockItems + 1 {
 				select {
-				case <-ctx.Done():
+				case <-m.stopProcessing:
 					return
 				case <-m.releaseShared:
 				}
@@ -163,7 +176,7 @@ func (m *Mutex) process(ctx context.Context) {
 
 			// Wait for the lock to be returned
 			select {
-			case <-ctx.Done():
+			case <-m.stopProcessing:
 				return
 			case <-m.releaseExclusive:
 			}
@@ -178,7 +191,7 @@ func (m *Mutex) process(ctx context.Context) {
 
 				// Wait for the lock to be returned
 				select {
-				case <-ctx.Done():
+				case <-m.stopProcessing:
 					return
 				case <-m.releaseExclusive:
 				}
@@ -190,8 +203,9 @@ func (m *Mutex) process(ctx context.Context) {
 	}
 }
 
-// cleanup - ensures that we don't have any resource leakage, provided the
-// context used to create the mutex has been cancelled.
+// cleanup - ensures that we don't have any resource leakage; however, this is
+// only run after the process method has finished, and that is triggered be
+// calling the Stop method.
 func (m *Mutex) cleanup() {
 	m.initialised = false
 

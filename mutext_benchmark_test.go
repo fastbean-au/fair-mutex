@@ -10,10 +10,12 @@ import (
 
 // Benchmark: Read lock
 func BenchmarkFairMutex_Read(b *testing.B) {
-	m := New(b.Context(),
+	m := New(
 		WithMaxReadQueueSize(1024),
 		WithMaxReadBatchSize(128),
 	)
+
+	defer m.Stop()
 
 	b.ResetTimer()
 
@@ -25,10 +27,12 @@ func BenchmarkFairMutex_Read(b *testing.B) {
 
 // Benchmark: Write lock
 func BenchmarkFairMutex_Write(b *testing.B) {
-	m := New(b.Context(),
+	m := New(
 		WithMaxReadQueueSize(1024),
 		WithMaxReadBatchSize(128),
 	)
+
+	defer m.Stop()
 
 	b.ResetTimer()
 
@@ -41,8 +45,10 @@ func BenchmarkFairMutex_Write(b *testing.B) {
 // Benchmark: Write under read pressure
 func BenchmarkFairMutex_Write_UnderReadLoadWithGaps(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	m := New(b.Context())
+	m := New()
+	defer m.Stop()
 
 	// Keep readers running
 	go func() {
@@ -71,14 +77,14 @@ func BenchmarkFairMutex_Write_UnderReadLoadWithGaps(b *testing.B) {
 		m.Lock()
 		m.Unlock() //nolint:staticcheck
 	}
-
-	cancel()
 }
 
 func BenchmarkFairMutex_Write_UnderReadAndWriteLoad(b *testing.B) {
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	m := New(b.Context())
+	m := New()
+	defer m.Stop()
 
 	// Keep readers running
 	for i := range 5 {
@@ -122,6 +128,4 @@ func BenchmarkFairMutex_Write_UnderReadAndWriteLoad(b *testing.B) {
 			}
 		})
 	}
-
-	cancel()
 }

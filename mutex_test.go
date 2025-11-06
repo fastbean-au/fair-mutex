@@ -1,7 +1,6 @@
 package fairmutex
 
 import (
-	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -10,7 +9,9 @@ import (
 
 func TestMutexBasicOperations(t *testing.T) {
 	t.Run("TestNew", func(t *testing.T) {
-		m := New(t.Context())
+		m := New()
+		defer m.Stop()
+
 		if m == nil || !m.initialised {
 			t.Fatal("New() did not return an initialized mutex")
 		}
@@ -27,7 +28,8 @@ func TestMutexBasicOperations(t *testing.T) {
 	})
 
 	t.Run("TestWriteLock", func(t *testing.T) {
-		m := New(t.Context())
+		m := New()
+		defer m.Stop()
 
 		var counter int32
 		var wg sync.WaitGroup
@@ -56,7 +58,8 @@ func TestMutexBasicOperations(t *testing.T) {
 	})
 
 	t.Run("TestReadLock", func(t *testing.T) {
-		m := New(t.Context())
+		m := New()
+		defer m.Stop()
 
 		var wg sync.WaitGroup
 
@@ -78,7 +81,8 @@ func TestMutexBasicOperations(t *testing.T) {
 	})
 
 	t.Run("TestReadWriteExclusivity", func(t *testing.T) {
-		m := New(t.Context())
+		m := New()
+		defer m.Stop()
 
 		var counter int32
 		var wg sync.WaitGroup
@@ -116,7 +120,8 @@ func TestMutexBasicOperations(t *testing.T) {
 	})
 
 	t.Run("TestPanicUnlockingWithoutALock", func(t *testing.T) {
-		m := New(t.Context())
+		m := New()
+		defer m.Stop()
 
 		// Expect panics for standard methods
 		assertPanic(t, "Unlock", func() { m.Unlock() })
@@ -124,12 +129,11 @@ func TestMutexBasicOperations(t *testing.T) {
 	})
 
 	t.Run("TestAfterCleanup", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(t.Context())
-		m := New(ctx)
+		m := New()
 
 		<-time.After(time.Millisecond * 10)
 
-		cancel()
+		m.Stop()
 
 		<-time.After(time.Millisecond * 10)
 

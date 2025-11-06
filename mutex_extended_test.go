@@ -14,10 +14,11 @@ func TestMutexFairness_ReadLocks(t *testing.T) {
 	maxQueueSize := 100
 	maxBatchSize := 10
 
-	m := New(t.Context(),
+	m := New(
 		WithMaxReadQueueSize(maxQueueSize),
 		WithMaxReadBatchSize(maxBatchSize),
 	)
+	defer m.Stop()
 
 	var wg sync.WaitGroup
 	order := make([]time.Time, maxQueueSize)
@@ -69,10 +70,11 @@ func TestMutexFairness_ReadLocks(t *testing.T) {
 }
 
 func TestMutexFairness_WriteLocks(t *testing.T) {
-	m := New(t.Context(),
+	m := New(
 		WithMaxWriteQueueSize(20),
 		WithMaxWriteBatchSize(5),
 	)
+	defer m.Stop()
 
 	var wg sync.WaitGroup
 	var order []int64
@@ -117,10 +119,11 @@ func TestMutexFairness_WriteLocks(t *testing.T) {
 }
 
 func TestHighVolume_ReadContention(t *testing.T) {
-	m := New(t.Context(),
+	m := New(
 		WithMaxReadQueueSize(2048),
 		WithMaxReadBatchSize(256),
 	)
+	defer m.Stop()
 
 	const numReaders = 10_000
 	var wg sync.WaitGroup
@@ -163,10 +166,11 @@ func TestHighVolume_ReadContention(t *testing.T) {
 }
 
 func TestHighVolume_WriteContention(t *testing.T) {
-	m := New(t.Context(),
+	m := New(
 		WithMaxWriteQueueSize(512),
 		WithMaxWriteBatchSize(64),
 	)
+	defer m.Stop()
 
 	const numWriters = 5000
 	var wg sync.WaitGroup
@@ -209,12 +213,13 @@ func TestHighVolume_WriteContention(t *testing.T) {
 }
 
 func TestMixedReadWrite_StarvationPrevention(t *testing.T) {
-	m := New(t.Context(),
+	m := New(
 		WithMaxReadQueueSize(512),
 		WithMaxReadBatchSize(64),
 		WithMaxWriteQueueSize(64),
 		WithMaxWriteBatchSize(1), // Only one writer at a time
 	)
+	defer m.Stop()
 
 	var wg sync.WaitGroup
 	var readCount, writeCount atomic.Int32
@@ -273,10 +278,11 @@ func TestMixedReadWrite_StarvationPrevention(t *testing.T) {
 }
 
 func TestBatchedReadProcessing(t *testing.T) {
-	m := New(t.Context(),
+	m := New(
 		WithMaxReadQueueSize(10),
 		WithMaxReadBatchSize(3),
 	)
+	defer m.Stop()
 
 	var wg sync.WaitGroup
 	var order = []int{}

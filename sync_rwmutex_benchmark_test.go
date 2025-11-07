@@ -1,5 +1,11 @@
 package fairmutex
 
+/*
+	The purpose of these benchmark tests is for a comparison between Fair-Mutex
+	and sync.RWMutex, allowing us to see the use cases for which Fair-Mutex's
+	use might be advantageous.
+*/
+
 import (
 	"fmt"
 	"sync"

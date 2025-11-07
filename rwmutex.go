@@ -11,12 +11,12 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-type Mutex struct {
-	initialised        bool
+type RWMutex struct {
+	initialised        atomic.Bool
 	config             *config
 	histogram          metric.Float64Histogram
-	exclusive          chan chan struct{}
-	shared             chan chan struct{}
+	exclusive          chan lockRequest
+	shared             chan lockRequest
 	releaseExclusive   chan struct{}
 	releaseShared      chan struct{}
 	stopProcessing     chan struct{}
@@ -24,9 +24,14 @@ type Mutex struct {
 	waitingOnShared    atomic.Bool
 }
 
+type lockRequest struct {
+	c chan struct{}
+	n int // The number of (shared) locks requested
+}
+
 // New - returns a pointer to a new Mutex with the processing process already
 // running.
-func New(options ...Option) *Mutex {
+func New(options ...Option) *RWMutex {
 	cfg := getConfig(options...)
 
 	meter := otel.Meter("fair-mutex")
@@ -43,12 +48,11 @@ func New(options ...Option) *Mutex {
 		panic(err)
 	}
 
-	m := &Mutex{
-		initialised:      true,
+	m := &RWMutex{
 		config:           cfg,
 		histogram:        histogram,
-		exclusive:        make(chan chan struct{}, cfg.exclusiveMaxQueueSize),
-		shared:           make(chan chan struct{}, cfg.sharedMaxQueueSize),
+		exclusive:        make(chan lockRequest, cfg.exclusiveMaxQueueSize),
+		shared:           make(chan lockRequest, cfg.sharedMaxQueueSize),
 		releaseExclusive: make(chan struct{}),
 		releaseShared:    make(chan struct{}, cfg.sharedMaxBatchSize),
 		stopProcessing:   make(chan struct{}),
@@ -56,37 +60,39 @@ func New(options ...Option) *Mutex {
 
 	go m.process()
 
+	m.initialised.Store(true)
+
 	return m
 }
 
 const (
-	NoLockTaken = iota
-	SharedLockTaken
-	ExclusiveLockTaken
+	noLockTaken = iota
+	sharedLockTaken
+	exclusiveLockTaken
 )
 
 // Stop - causes the go func processing mutex requests to stop running and the
 // cleanup method to be called after that. Calling this function is required so
 // that resources are not leaked (e.g. zombie go processes).
-func (m *Mutex) Stop() {
-	if m.initialised {
+func (m *RWMutex) Stop() {
+	if m.initialised.Load() {
 		m.stopProcessing <- struct{}{}
 	}
 }
 
 // process - handles the batching and granting of the lock requests
-func (m *Mutex) process() {
+func (m *RWMutex) process() {
 	defer m.cleanup()
 
-	var loopInitLock chan struct{}
+	var loopInitLock lockRequest
 	var lockItems int
-	lockTypeTaken := NoLockTaken
+	lockTypeTaken := noLockTaken
 
 	for {
 		switch lockTypeTaken {
 
 		// If the last batch processed was shared, give exclusive locks, if any are waiting
-		case SharedLockTaken:
+		case sharedLockTaken:
 			select {
 
 			case <-m.stopProcessing:
@@ -95,15 +101,15 @@ func (m *Mutex) process() {
 			case loopInitLock = <-m.exclusive:
 				m.waitingOnExclusive.Store(true)
 				lockItems = min(len(m.exclusive), m.config.exclusiveMaxBatchSize)
-				lockTypeTaken = ExclusiveLockTaken
+				lockTypeTaken = exclusiveLockTaken
 
 			default:
-				lockTypeTaken = NoLockTaken
+				lockTypeTaken = noLockTaken
 
 			}
 
 		// If the last batch processed was exclusive, give shared locks, if any are waiting
-		case ExclusiveLockTaken:
+		case exclusiveLockTaken:
 			select {
 
 			case <-m.stopProcessing:
@@ -112,10 +118,10 @@ func (m *Mutex) process() {
 			case loopInitLock = <-m.shared:
 				m.waitingOnShared.Store(true)
 				lockItems = min(len(m.shared), m.config.sharedMaxBatchSize)
-				lockTypeTaken = SharedLockTaken
+				lockTypeTaken = sharedLockTaken
 
 			default:
-				lockTypeTaken = NoLockTaken
+				lockTypeTaken = noLockTaken
 
 			}
 
@@ -123,7 +129,7 @@ func (m *Mutex) process() {
 
 		// If this is the initial loop or there were no locks waiting of the opposite type to the last batch, then
 		// we'll randomly select which type of lock to grant (given one of each type is requested simultaneously).
-		if lockTypeTaken == NoLockTaken {
+		if lockTypeTaken == noLockTaken {
 			select {
 
 			case <-m.stopProcessing:
@@ -132,12 +138,12 @@ func (m *Mutex) process() {
 			case loopInitLock = <-m.exclusive:
 				m.waitingOnExclusive.Store(true)
 				lockItems = min(len(m.exclusive), m.config.exclusiveMaxBatchSize)
-				lockTypeTaken = ExclusiveLockTaken
+				lockTypeTaken = exclusiveLockTaken
 
 			case loopInitLock = <-m.shared:
 				m.waitingOnShared.Store(true)
 				lockItems = min(len(m.shared), m.config.sharedMaxBatchSize)
-				lockTypeTaken = SharedLockTaken
+				lockTypeTaken = sharedLockTaken
 
 			}
 		}
@@ -145,20 +151,24 @@ func (m *Mutex) process() {
 		// Action the locks - grant and wait until they are released
 		switch lockTypeTaken {
 
-		case SharedLockTaken:
+		case sharedLockTaken:
 			// Process shared locks - grant the locks
-			loopInitLock <- struct{}{} // Initial lock
+			loopInitLock.c <- struct{}{} // Initial lock
+
+			lockCnt := loopInitLock.n
 
 			for range lockItems {
 				// Grab the lock request
 				l := <-m.shared
 
 				// Signal to the requester that they now have the lock
-				l <- struct{}{}
+				l.c <- struct{}{}
+
+				lockCnt += l.n
 			}
 
 			// Wait for the shared locks to be returned
-			for range lockItems + 1 {
+			for range lockCnt {
 				select {
 				case <-m.stopProcessing:
 					return
@@ -168,12 +178,12 @@ func (m *Mutex) process() {
 
 			m.waitingOnShared.Store(false)
 
-		case ExclusiveLockTaken:
+		case exclusiveLockTaken:
 			// Process exclusive locks - grant and wait for each lock to be returned
 
 			// Initial loop lock
 			// Signal to the requester that they now have the lock
-			loopInitLock <- struct{}{}
+			loopInitLock.c <- struct{}{}
 
 			// Wait for the lock to be returned
 			select {
@@ -188,7 +198,7 @@ func (m *Mutex) process() {
 				l := <-m.exclusive
 
 				// Signal to the requester that they now have the lock
-				l <- struct{}{}
+				l.c <- struct{}{}
 
 				// Wait for the lock to be returned
 				select {
@@ -207,8 +217,8 @@ func (m *Mutex) process() {
 // cleanup - ensures that we don't have any resource leakage; however, this is
 // only run after the process method has finished, and that is triggered be
 // calling the Stop method.
-func (m *Mutex) cleanup() {
-	m.initialised = false
+func (m *RWMutex) cleanup() {
+	m.initialised.Store(false)
 
 	close(m.exclusive)
 	close(m.shared)
@@ -225,8 +235,8 @@ func (m *Mutex) cleanup() {
 // It should not be used for recursive read locking; a blocked Lock call
 // excludes new readers from acquiring the lock. See the documentation on the
 // RWMutex type (https://pkg.go.dev/sync#RWMutex).
-func (m *Mutex) RLock() {
-	if !m.initialised {
+func (m *RWMutex) RLock() {
+	if !m.initialised.Load() {
 		panic("attempt to use fair-mutex uninitialised")
 	}
 
@@ -236,7 +246,7 @@ func (m *Mutex) RLock() {
 	defer close(l)
 
 	// Request the lock
-	m.shared <- l
+	m.shared <- lockRequest{c: l, n: 1}
 
 	// Wait for the lock to be granted
 	<-l
@@ -250,8 +260,8 @@ func (m *Mutex) RLock() {
 //
 // Note that while correct uses of TryRLock do exist, they are rare, and use of
 // TryRLock is often a sign of a deeper problem in a particular use of mutexes.
-func (m *Mutex) TryRLock() bool {
-	if !m.initialised {
+func (m *RWMutex) TryRLock() bool {
+	if !m.initialised.Load() {
 		panic("attempt to use fair-mutex uninitialised")
 	}
 
@@ -263,7 +273,7 @@ func (m *Mutex) TryRLock() bool {
 	}
 
 	// Request the lock
-	m.shared <- l
+	m.shared <- lockRequest{c: l, n: 1}
 
 	// Wait for the lock to be granted
 	<-l
@@ -274,8 +284,8 @@ func (m *Mutex) TryRLock() bool {
 // RUnlock - undoes a single fairmutex.RLock call; it does not affect other
 // simultaneous readers. It is a run-time error if rw is not locked for reading
 // on entry to RUnlock.
-func (m *Mutex) RUnlock() {
-	if !m.initialised {
+func (m *RWMutex) RUnlock() {
+	if !m.initialised.Load() {
 		panic("attempt to use fair-mutex uninitialised")
 	}
 
@@ -288,8 +298,8 @@ func (m *Mutex) RUnlock() {
 
 // Lock - locks the mutex for writing. If the mutex is already locked for
 // reading or writing, Lock blocks until the lock is available.
-func (m *Mutex) Lock() {
-	if !m.initialised {
+func (m *RWMutex) Lock() {
+	if !m.initialised.Load() {
 		panic("attempt to use fair-mutex uninitialised")
 	}
 
@@ -299,7 +309,7 @@ func (m *Mutex) Lock() {
 	defer close(l)
 
 	// Request the lock
-	m.exclusive <- l
+	m.exclusive <- lockRequest{c: l, n: 1}
 
 	// Wait for the lock to be granted
 	<-l
@@ -313,8 +323,8 @@ func (m *Mutex) Lock() {
 //
 // Note that while correct uses of TryLock do exist, they are rare, and use of
 // TryLock is often a sign of a deeper problem in a particular use of mutexes.
-func (m *Mutex) TryLock() bool {
-	if !m.initialised {
+func (m *RWMutex) TryLock() bool {
+	if !m.initialised.Load() {
 		panic("attempt to use fair-mutex uninitialised")
 	}
 
@@ -327,7 +337,7 @@ func (m *Mutex) TryLock() bool {
 	}
 
 	// Request the lock
-	m.exclusive <- l
+	m.exclusive <- lockRequest{c: l, n: 1}
 
 	// Wait on the lock to be granted
 	<-l
@@ -342,8 +352,8 @@ func (m *Mutex) TryLock() bool {
 // goroutine. One goroutine may fairmutex.RLock (fairmutex.Lock) a FairMutex and
 // then arrange for another goroutine to fairmutex.RUnlock (fairmutex.Unlock)
 // it.
-func (m *Mutex) Unlock() {
-	if !m.initialised {
+func (m *RWMutex) Unlock() {
+	if !m.initialised.Load() {
 		panic("attempt to use fair-mutex uninitialised")
 	}
 
@@ -356,11 +366,40 @@ func (m *Mutex) Unlock() {
 
 // RLocker - returns a [Locker] interface that implements the [Locker.Lock] and
 // [Locker.Unlock] methods by calling m.RLock and m.RUnlock.
-func (m *Mutex) RLocker() sync.Locker {
+func (m *RWMutex) RLocker() sync.Locker {
 	return (*rlocker)(m)
 }
 
-type rlocker Mutex
+type rlocker RWMutex
 
-func (r *rlocker) Lock()   { (*Mutex)(r).RLock() }
-func (r *rlocker) Unlock() { (*Mutex)(r).RUnlock() }
+func (r *rlocker) Lock()   { (*RWMutex)(r).RLock() }
+func (r *rlocker) Unlock() { (*RWMutex)(r).RUnlock() }
+
+// Extension methods
+
+// RLockSet - locks the mutex for reading, granting the requested number of 
+// locks.
+//
+// It should not be used for recursive read locking; a blocked Lock call
+// excludes new readers from acquiring the lock. See the documentation on the
+// RWMutex type (https://pkg.go.dev/sync#RWMutex).
+func (m *RWMutex) RLockSet(number int) {
+	if !m.initialised.Load() {
+		panic("attempt to use fair-mutex uninitialised")
+	}
+
+	start := time.Now()
+
+	l := make(chan struct{})
+	defer close(l)
+
+	// Request the lock
+	m.shared <- lockRequest{c: l, n: number}
+
+	// Wait for the lock to be granted
+	<-l
+
+	m.histogram.Record(context.Background(), time.Since(start).Seconds(), metric.WithAttributes(
+		append(m.config.metricAttributes, attribute.String("operation", "RLock"))...,
+	))
+}

@@ -169,7 +169,7 @@ Side-by-side comparison of `fair-mutex` and `sync.RWMutex`.
 |Fair-Mutex UnderReadAndWriteLoad/WriteLocks=8|950|1,262,626|5,813|101 |
 |SyncRWMutex UnderReadAndWriteLoad/WriteLocks=8|127|9,399,258|10,123|128 |
 ||||||
-|Fair-Mutex UnderReadAndWriteLoad/WriteLocks=9|928|1,246,964|6,178|109 |å
+|Fair-Mutex UnderReadAndWriteLoad/WriteLocks=9|928|1,246,964|6,178|109 |
 |SyncRWMutex UnderReadAndWriteLoad/WriteLocks=9|100|10,664,838|11,401|145 |
 ||||||
 |Fair-Mutex UnderReadAndWriteLoad/WriteLocks=10|922|1,243,630|6533|115 |

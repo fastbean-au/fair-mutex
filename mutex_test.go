@@ -82,6 +82,52 @@ func TestMutexBasicOperations(t *testing.T) {
 		wg.Wait()
 	})
 
+	t.Run("TestTryReadLock", func(t *testing.T) {
+		m := New()
+		defer m.Stop()
+
+		m.Lock()
+
+		if m.TryRLock() {
+			t.Log("try lock granted when mutex was already locked")
+			t.FailNow()
+		}
+
+		m.Unlock()
+
+		<-time.After(time.Millisecond)
+
+		if !m.TryRLock() {
+			t.Log("try lock failed when mutex was unlocked")
+			t.FailNow()
+		}
+
+		m.RUnlock()
+	})
+
+	t.Run("TestTryLock", func(t *testing.T) {
+		m := New()
+		defer m.Stop()
+
+		m.RLock()
+
+		if m.TryLock() {
+			t.Log("try lock granted when mutex was already locked")
+			t.FailNow()
+		}
+
+		m.RUnlock()
+
+		<-time.After(time.Millisecond)
+
+		if !m.TryLock() {
+			t.Log("try lock failed when mutex was unlocked")
+			t.FailNow()
+		}
+
+		m.Unlock()
+	})
+
 	t.Run("TestReadWriteExclusivity", func(t *testing.T) {
 		m := New()
 		defer m.Stop()

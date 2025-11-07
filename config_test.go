@@ -1,6 +1,10 @@
 package fairmutex
 
-import "testing"
+import (
+	"testing"
+
+	"go.opentelemetry.io/otel/attribute"
+)
 
 func TestMutexConfigDefaultsAndOverrides(t *testing.T) {
 	tests := []struct {
@@ -61,6 +65,17 @@ func TestMutexConfigDefaultsAndOverrides(t *testing.T) {
 				exclusiveMaxBatchSize: 10,
 				exclusiveMaxQueueSize: 10,
 				metricName:            "go.mutex.wait.seconds",
+			},
+		},
+		{
+			name:    "metrics config",
+			options: []Option{WithMetricName("my.metric"), WithMetricAttributes(attribute.Int("my_attribute", 42))},
+			expected: config{
+				sharedMaxBatchSize:    1024,
+				sharedMaxQueueSize:    1024,
+				exclusiveMaxBatchSize: 32,
+				exclusiveMaxQueueSize: 256,
+				metricName:            "my.metric",
 			},
 		},
 	}

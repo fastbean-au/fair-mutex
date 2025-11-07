@@ -76,6 +76,7 @@ func TestMutexConfigDefaultsAndOverrides(t *testing.T) {
 				exclusiveMaxBatchSize: 32,
 				exclusiveMaxQueueSize: 256,
 				metricName:            "my.metric",
+				metricAttributes: []attribute.KeyValue{attribute.Int("my_attribute", 42)},
 			},
 		},
 	}

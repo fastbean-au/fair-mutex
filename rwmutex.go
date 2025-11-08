@@ -378,7 +378,11 @@ func (r *rlocker) Unlock() { (*RWMutex)(r).RUnlock() }
 // Extension methods
 
 // RLockSet - locks the mutex for reading, granting the requested number of 
-// locks.
+// locks. RUnlock must be called one for each of the requested number of locks.
+//
+// Use RLockSet when a set of read locks is required to be granted at the same
+// time (that is, within the same batch). This might be done when read locks
+// were granted in a loop before processing was done, and the locks unlocked.
 //
 // It should not be used for recursive read locking; a blocked Lock call
 // excludes new readers from acquiring the lock. See the documentation on the
@@ -400,6 +404,6 @@ func (m *RWMutex) RLockSet(number int) {
 	<-l
 
 	m.histogram.Record(context.Background(), time.Since(start).Seconds(), metric.WithAttributes(
-		append(m.config.metricAttributes, attribute.String("operation", "RLock"))...,
+		append(m.config.metricAttributes, attribute.String("operation", "RLockSet"))...,
 	))
 }

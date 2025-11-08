@@ -7,6 +7,7 @@ package fairmutex
 */
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -19,7 +20,7 @@ func BenchmarkSyncRWMutex_Read(b *testing.B) {
 
 	b.ResetTimer()
 
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		m.RLock()
 		m.RUnlock() //nolint:staticcheck
 	}
@@ -31,7 +32,7 @@ func BenchmarkSyncRWMutex_Write(b *testing.B) {
 
 	b.ResetTimer()
 
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		m.Lock()
 		m.Unlock() //nolint:staticcheck
 	}
@@ -39,7 +40,8 @@ func BenchmarkSyncRWMutex_Write(b *testing.B) {
 
 // Benchmark: Write under read pressure
 func BenchmarkSyncRW_Write_UnderReadLoadWithGaps(b *testing.B) {
-	ctx := b.Context()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	m := new(sync.RWMutex)
 
@@ -66,14 +68,15 @@ func BenchmarkSyncRW_Write_UnderReadLoadWithGaps(b *testing.B) {
 
 	b.ResetTimer()
 
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		m.Lock()
 		m.Unlock() //nolint:staticcheck
 	}
 }
 
 func BenchmarkSyncRW_Write_UnderReadAndWriteLoad(b *testing.B) {
-	ctx := b.Context()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	m := new(sync.RWMutex)
 

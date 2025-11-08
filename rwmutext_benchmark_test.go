@@ -19,7 +19,7 @@ func BenchmarkFairMutex_Read(b *testing.B) {
 
 	b.ResetTimer()
 
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		m.RLock()
 		m.RUnlock() //nolint:staticcheck
 	}
@@ -36,7 +36,7 @@ func BenchmarkFairMutex_Write(b *testing.B) {
 
 	b.ResetTimer()
 
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		m.Lock()
 		m.Unlock() //nolint:staticcheck
 	}
@@ -73,7 +73,7 @@ func BenchmarkFairMutex_Write_UnderReadLoadWithGaps(b *testing.B) {
 
 	b.ResetTimer()
 
-	for b.Loop() {
+	for i := 0; i < b.N; i++ {
 		m.Lock()
 		m.Unlock() //nolint:staticcheck
 	}

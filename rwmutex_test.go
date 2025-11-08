@@ -10,7 +10,6 @@ import (
 
 // === Basic Test Suite ===
 
-
 func TestFairMutexBasicOperations(t *testing.T) {
 	t.Run("TestNew", func(t *testing.T) {
 		m := New()
@@ -31,6 +30,7 @@ func TestFairMutexBasicOperations(t *testing.T) {
 		assertPanic(t, "RUnlock", func() { m.RUnlock() })
 		assertPanic(t, "TryLock", func() { m.TryLock() })
 		assertPanic(t, "TryRLock", func() { m.TryRLock() })
+		assertPanic(t, "RLockSet", func() { m.RLockSet(1) })
 	})
 
 	t.Run("TestWriteLock", func(t *testing.T) {
@@ -223,6 +223,7 @@ func TestFairMutexBasicOperations(t *testing.T) {
 		assertPanic(t, "RUnlock", func() { m.RUnlock() })
 		assertPanic(t, "TryLock", func() { m.TryLock() })
 		assertPanic(t, "TryRLock", func() { m.TryRLock() })
+		assertPanic(t, "RLockSet", func() { m.RLockSet(1) })
 	})
 
 	t.Run("TestStopAfterStop", func(t *testing.T) {
@@ -245,6 +246,7 @@ func TestFairMutexBasicOperations(t *testing.T) {
 		assertPanic(t, "RUnlock", func() { m.RUnlock() })
 		assertPanic(t, "TryLock", func() { m.TryLock() })
 		assertPanic(t, "TryRLock", func() { m.TryRLock() })
+		assertPanic(t, "RLockSet", func() { m.RLockSet(1) })
 	})
 
 	t.Run("TestAfterCleanup", func(t *testing.T) {
@@ -263,6 +265,7 @@ func TestFairMutexBasicOperations(t *testing.T) {
 		assertPanic(t, "RUnlock", func() { m.RUnlock() })
 		assertPanic(t, "TryLock", func() { m.TryLock() })
 		assertPanic(t, "TryRLock", func() { m.TryRLock() })
+		assertPanic(t, "RLockSet", func() { m.RLockSet(1) })
 	})
 
 	t.Run("TestRLocker", func(t *testing.T) {

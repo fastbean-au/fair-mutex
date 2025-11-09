@@ -15,7 +15,8 @@
 **fair-mutex** is a Go implementation of a fair RW mutex; that is, a mutex where write locks will not be prevented in a high volume read-lock use case. The larger the number of write locks required, the larger the performance benefit over `sync.RWMutex`. This is perhaps a fairly narrow use-case; if you don't need this then consider using [go-lock](https://github.com/viney-shih/go-lock) if the built-in `sync.RWMutex` or `sync.Mutex` do not meet your needs. To see if **fair-mutex** might meet your needs, start by looking at the benchmark results.
 
 <div align="center">
-  <img src="assets/comparison.jpg" alt="Comparison" width="300"/>
+  <img src="assets/trivial_comparison.png" alt="Trivial Comparison" width="300"/>
+  <img src="assets/modest_comparison.png" alt="Modest Comparison" width="300"/>
 </div>
 
 This implementation can be used as *functional* a drop-in replacement for Go's [`sync.RWMutex`](https://pkg.go.dev/sync#RWMutex) or [`sync.Mutex`](https://pkg.go.dev/sync#Mutex) as at Go 1.25 (with limitations - please see below). (*Note:* the `New()` function must be called to initialise the mutex prior to use, and the `Stop()` method must be called in order to release the resources associated with the mutex. *NB*: calling any method on the mutex after calling `Stop()` will result in a panic).
@@ -146,46 +147,32 @@ func main() {
 
 Side-by-side comparison of `fair-mutex` and `sync.RWMutex`.
 
-A note on the WriteLocks benchmarks: the read locks are being held for 1ms. The `NS/Operation` time includes that time.
+#### Trivial Work Benchmark Results
 
+| Writers | sync.RWMutex (ns/op) | fairmutex (ns/op) |
+| :-----: | -------------------: | ----------------: |
+|    1    |           14,870,190 |           719,683 |
+|    2    |            7,273,050 |           769,548 |
+|    3    |            7,146,193 |           812,669 |
+|    4    |            7,475,475 |           803,027 |
+|    5    |           10,165,111 |           874,864 |
+|    6    |            8,538,970 |           849,611 |
+|    7    |           12,630,164 |           968,010 |
+|    8    |           10,627,631 |           995,114 |
+|    9    |           16,363,434 |           976,775 |
+|    10   |           15,265,435 |         1,036,166 |
 
-| Test                                            | Operations | NS/Operation | Memory Bytes/Op | Memory Allocs/Op |
-| ----------------------------------------------- | ---------: | -----------: | --------------: | ---------------: |
-| Fair-Mutex Read                                 |    895,989 |        1,232 |             448 |                7 |
-| SyncRWMutex Read                                | 83,635,585 |        14.02 |               0 |                0 |
-|                                                 |            |              |                 |                  |
-| Fair-Mutex Write                                |    888,465 |        1,215 |             448 |                7 |
-| SyncRWMutex Write                               | 63,250,966 |        18.52 |               0 |                0 |
-|                                                 |            |              |                 |                  |
-| Fair-Mutex UnderReadLoadWithGaps                |     10,768 |      174,686 |             549 |                8 |
-| SyncRWMutex UnderReadLoadWithGaps               |      1,065 |    1,147,626 |             247 |                2 |
-|                                                 |            |              |                 |                  |
-| Fair-Mutex UnderReadAndWriteLoad/WriteLocks=1   |      1,051 |    1,191,007 |           3,977 |               57 |
-| SyncRWMutex UnderReadAndWriteLoad/WriteLocks=1  |      1,036 |    1,180,587 |           2,242 |               28 |
-|                                                 |            |              |                 |                  |
-| Fair-Mutex UnderReadAndWriteLoad/WriteLocks=2   |      1,015 |    1,197,810 |           4,847 |               70 |
-| SyncRWMutex UnderReadAndWriteLoad/WriteLocks=2  |        508 |    2,382,394 |           4,570 |               57 |
-|                                                 |            |              |                 |                  |
-| Fair-Mutex UnderReadAndWriteLoad/WriteLocks=3   |      1,014 |    1,215,618 |           5,718 |               84 |
-| SyncRWMutex UnderReadAndWriteLoad/WriteLocks=3  |        338 |    3,546,250 |           6,597 |               82 |
-|                                                 |            |              |                 |                  |
-| Fair-Mutex UnderReadAndWriteLoad/WriteLocks=4   |      1,016 |    1,212,434 |           6,291 |               93 |
-| SyncRWMutex UnderReadAndWriteLoad/WriteLocks=4  |        252 |    4,747,387 |           8,725 |              109 |
-|                                                 |            |              |                 |                  |
-| Fair-Mutex UnderReadAndWriteLoad/WriteLocks=5   |      1,008 |    1,207,242 |           6,775 |              101 |
-| SyncRWMutex UnderReadAndWriteLoad/WriteLocks=5  |        201 |    5,909,682 |          10,914 |              136 |
-|                                                 |            |              |                 |                  |
-| Fair-Mutex UnderReadAndWriteLoad/WriteLocks=6   |        973 |    1,237,701 |           7,460 |              112 |
-| SyncRWMutex UnderReadAndWriteLoad/WriteLocks=6  |        170 |    7,081,535 |          13,128 |              163 |
-|                                                 |            |              |                 |                  |
-| Fair-Mutex UnderReadAndWriteLoad/WriteLocks=7   |      1,004 |    1,222,311 |           7,895 |              119 |
-| SyncRWMutex UnderReadAndWriteLoad/WriteLocks=7  |        144 |    8,192,802 |          15,318 |              191 |
-|                                                 |            |              |                 |                  |
-| Fair-Mutex UnderReadAndWriteLoad/WriteLocks=8   |        992 |    1,232,482 |           8,412 |              128 |
-| SyncRWMutex UnderReadAndWriteLoad/WriteLocks=8  |        126 |    9,369,983 |          16,883 |              210 |
-|                                                 |            |              |                 |                  |
-| Fair-Mutex UnderReadAndWriteLoad/WriteLocks=9   |        991 |    1,241,530 |           8,915 |              137 |
-| SyncRWMutex UnderReadAndWriteLoad/WriteLocks=9  |        100 |   10,659,486 |          20,575 |              256 |
-|                                                 |            |              |                 |                  |
-| Fair-Mutex UnderReadAndWriteLoad/WriteLocks=10  |        994 |    1,242,866 |           9,397 |              145 |
-| SyncRWMutex UnderReadAndWriteLoad/WriteLocks=10 |        100 |   11,749,459 |          21,634 |              269 |
+#### Modest Work Benchmark Results
+
+| Writers | sync.RWMutex (ns/op) | fairmutex (ns/op) |
+| :-----: | -------------------: | ----------------: |
+|    1    |           17,347,287 |           754,380 |
+|    2    |            7,277,840 |           728,719 |
+|    3    |            7,078,950 |           849,244 |
+|    4    |            8,928,693 |           812,743 |
+|    5    |            9,300,526 |           886,331 |
+|    6    |           10,996,652 |           939,140 |
+|    7    |           13,701,765 |           907,444 |
+|    8    |           15,230,406 |           917,475 |
+|    9    |           14,624,404 |           942,636 |
+|    10   |           14,851,391 |           938,722 |

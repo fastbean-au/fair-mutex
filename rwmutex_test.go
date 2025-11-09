@@ -272,7 +272,7 @@ func TestFairMutexBasicOperations(t *testing.T) {
 		<-time.After(time.Millisecond * 10)
 
 		m.Lock()
-		m.Unlock()
+		m.Unlock() //nolint:staticcheck
 
 		// Allow time to wait for the next locks
 		<-time.After(time.Millisecond)

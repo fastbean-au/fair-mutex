@@ -309,13 +309,12 @@ func (m *RWMutex) RUnlock() {
 	}
 
 	u := make(chan struct{})
+	defer close(u)
 
 	m.releaseShared <- u
 
 	// Wait for the lock to be released
 	<-u
-
-	close(u)
 }
 
 // Lock - locks the mutex for writing. If the mutex is already locked for
@@ -384,13 +383,12 @@ func (m *RWMutex) Unlock() {
 	}
 
 	u := make(chan struct{})
+	defer close(u)
 
 	m.releaseExclusive <- u
 
 	// Wait for the lock to be released
 	<-u
-
-	close(u)
 }
 
 // RLocker - returns a [Locker] interface that implements the [Locker.Lock] and

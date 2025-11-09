@@ -126,8 +126,6 @@ func TestFairMutexBasicOperations(t *testing.T) {
 
 		m.Unlock()
 
-		<-time.After(time.Millisecond)
-
 		if !m.TryRLock() {
 			t.Log("try lock failed when mutex was unlocked")
 			t.FailNow()
@@ -148,8 +146,6 @@ func TestFairMutexBasicOperations(t *testing.T) {
 		}
 
 		m.RUnlock()
-
-		<-time.After(time.Millisecond)
 
 		if !m.TryLock() {
 			t.Log("try lock failed when mutex was unlocked")
@@ -234,6 +230,107 @@ func TestFairMutexBasicOperations(t *testing.T) {
 		m.Stop()
 
 		<-time.After(time.Millisecond * 10)
+
+		m.Stop()
+
+		<-time.After(time.Millisecond * 10)
+
+		// Expect panics for standard methods
+		assertPanic(t, "Lock", func() { m.Lock() })
+		assertPanic(t, "Unlock", func() { m.Unlock() })
+		assertPanic(t, "RLock", func() { m.RLock() })
+		assertPanic(t, "RUnlock", func() { m.RUnlock() })
+		assertPanic(t, "TryLock", func() { m.TryLock() })
+		assertPanic(t, "TryRLock", func() { m.TryRLock() })
+		assertPanic(t, "RLockSet", func() { m.RLockSet(1) })
+	})
+
+	t.Run("TestStopAfterLock", func(t *testing.T) {
+		m := New()
+
+		<-time.After(time.Millisecond * 10)
+
+		m.Lock()
+
+		m.Stop()
+
+		<-time.After(time.Millisecond * 10)
+
+		// Expect panics for standard methods
+		assertPanic(t, "Lock", func() { m.Lock() })
+		assertPanic(t, "Unlock", func() { m.Unlock() })
+		assertPanic(t, "RLock", func() { m.RLock() })
+		assertPanic(t, "RUnlock", func() { m.RUnlock() })
+		assertPanic(t, "TryLock", func() { m.TryLock() })
+		assertPanic(t, "TryRLock", func() { m.TryRLock() })
+		assertPanic(t, "RLockSet", func() { m.RLockSet(1) })
+	})
+
+	t.Run("TestStopAfterLockUnlock", func(t *testing.T) {
+		m := New()
+
+		<-time.After(time.Millisecond * 10)
+
+		m.Lock()
+		m.Unlock()
+
+		// Allow time to wait for the next locks
+		<-time.After(time.Millisecond)
+
+		m.Stop()
+
+		<-time.After(time.Millisecond * 10)
+
+		// Expect panics for standard methods
+		assertPanic(t, "Lock", func() { m.Lock() })
+		assertPanic(t, "Unlock", func() { m.Unlock() })
+		assertPanic(t, "RLock", func() { m.RLock() })
+		assertPanic(t, "RUnlock", func() { m.RUnlock() })
+		assertPanic(t, "TryLock", func() { m.TryLock() })
+		assertPanic(t, "TryRLock", func() { m.TryRLock() })
+		assertPanic(t, "RLockSet", func() { m.RLockSet(1) })
+	})
+
+	t.Run("TestStopAfterLocks", func(t *testing.T) {
+		m := New()
+
+		<-time.After(time.Millisecond * 10)
+
+		m.Lock()
+
+		go func() {
+			m.Lock()
+		}()
+
+		go func() {
+			m.Lock()
+		}()
+
+		// Allow time for the locks to be queued
+		<-time.After(time.Millisecond)
+
+		m.Unlock()
+
+		m.Stop()
+
+		<-time.After(time.Millisecond * 10)
+
+		// Expect panics for standard methods
+		assertPanic(t, "Lock", func() { m.Lock() })
+		assertPanic(t, "Unlock", func() { m.Unlock() })
+		assertPanic(t, "RLock", func() { m.RLock() })
+		assertPanic(t, "RUnlock", func() { m.RUnlock() })
+		assertPanic(t, "TryLock", func() { m.TryLock() })
+		assertPanic(t, "TryRLock", func() { m.TryRLock() })
+		assertPanic(t, "RLockSet", func() { m.RLockSet(1) })
+	})
+
+	t.Run("TestStopAfterRLock", func(t *testing.T) {
+		m := New()
+
+		<-time.After(time.Millisecond * 10)
+
+		m.RLock()
 
 		m.Stop()
 

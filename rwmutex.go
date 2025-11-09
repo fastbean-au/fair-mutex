@@ -17,8 +17,8 @@ type RWMutex struct {
 	histogram          metric.Float64Histogram
 	exclusive          chan lockRequest
 	shared             chan lockRequest
-	releaseExclusive   chan struct{}
-	releaseShared      chan struct{}
+	releaseExclusive   chan chan struct{}
+	releaseShared      chan chan struct{}
 	stopProcessing     chan struct{}
 	waitingOnExclusive atomic.Bool
 	waitingOnShared    atomic.Bool
@@ -53,8 +53,8 @@ func New(options ...Option) *RWMutex {
 		histogram:        histogram,
 		exclusive:        make(chan lockRequest, cfg.exclusiveMaxQueueSize),
 		shared:           make(chan lockRequest, cfg.sharedMaxQueueSize),
-		releaseExclusive: make(chan struct{}),
-		releaseShared:    make(chan struct{}, cfg.sharedMaxBatchSize),
+		releaseExclusive: make(chan chan struct{}),
+		releaseShared:    make(chan chan struct{}, cfg.sharedMaxBatchSize),
 		stopProcessing:   make(chan struct{}),
 	}
 
@@ -168,15 +168,20 @@ func (m *RWMutex) process() {
 			}
 
 			// Wait for the shared locks to be returned
-			for range lockCnt {
+			for n := 1; n <= lockCnt; n++ {
 				select {
 				case <-m.stopProcessing:
 					return
-				case <-m.releaseShared:
+				case u := <-m.releaseShared:
+					if n == lockCnt {
+						m.waitingOnShared.Store(false)
+					}
+
+					// Signal back that the lock has been released
+					u<-struct{}{}
 				}
 			}
 
-			m.waitingOnShared.Store(false)
 
 		case exclusiveLockTaken:
 			// Process exclusive locks - grant and wait for each lock to be returned
@@ -189,27 +194,37 @@ func (m *RWMutex) process() {
 			select {
 			case <-m.stopProcessing:
 				return
-			case <-m.releaseExclusive:
-			}
+			case u := <-m.releaseExclusive:
+					if lockItems == 0 {
+						m.waitingOnExclusive.Store(false)
+					}
 
-			// Remaining exclusive lock requests
-			for range lockItems {
-				// Grab the lock request
-				l := <-m.exclusive
+					// Signal back that the lock has been released
+					u<-struct{}{}
 
-				// Signal to the requester that they now have the lock
-				l.c <- struct{}{}
+				// Remaining exclusive lock requests
+				for n := 1; n <= lockItems; n++ {
+					// Grab the lock request
+					l := <-m.exclusive
 
-				// Wait for the lock to be returned
-				select {
-				case <-m.stopProcessing:
-					return
-				case <-m.releaseExclusive:
+					// Signal to the requester that they now have the lock
+					l.c <- struct{}{}
+
+					// Wait for the lock to be returned
+					select {
+					case <-m.stopProcessing:
+						return
+					case u := <-m.releaseExclusive:
+						if n == lockItems {
+							m.waitingOnExclusive.Store(false)
+						}
+
+						// Signal back that the lock has been released
+						u<-struct{}{}
+					}
 				}
+
 			}
-
-			m.waitingOnExclusive.Store(false)
-
 		}
 	}
 }
@@ -293,7 +308,14 @@ func (m *RWMutex) RUnlock() {
 		panic("fair-mutex: RUnlock of unlocked RWMutex")
 	}
 
-	m.releaseShared <- struct{}{}
+	u := make(chan struct{})
+
+	m.releaseShared <- u
+
+	// Wait for the lock to be released
+	<-u
+
+	close(u)
 }
 
 // Lock - locks the mutex for writing. If the mutex is already locked for
@@ -361,7 +383,14 @@ func (m *RWMutex) Unlock() {
 		panic("fair-mutex: Unlock of unlocked RWMutex")
 	}
 
-	m.releaseExclusive <- struct{}{}
+	u := make(chan struct{})
+
+	m.releaseExclusive <- u
+
+	// Wait for the lock to be released
+	<-u
+
+	close(u)
 }
 
 // RLocker - returns a [Locker] interface that implements the [Locker.Lock] and

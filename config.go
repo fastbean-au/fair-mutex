@@ -15,6 +15,7 @@ func getConfig(options ...Option) *config {
 	// Create config with defaults
 	cfg := &config{
 		sharedMaxQueueSize:    1024,
+		sharedMaxBatchSize:    1024,
 		exclusiveMaxBatchSize: 32,
 		exclusiveMaxQueueSize: 256,
 		metricName:            "go.mutex.wait.seconds",
@@ -28,14 +29,16 @@ func getConfig(options ...Option) *config {
 	// or is zero.
 	if cfg.sharedMaxBatchSize > cfg.sharedMaxQueueSize {
 		cfg.sharedMaxBatchSize = cfg.sharedMaxQueueSize
-	} else if cfg.sharedMaxBatchSize == 0 {
-		cfg.sharedMaxBatchSize = cfg.sharedMaxQueueSize
+	} else if cfg.sharedMaxBatchSize < 1 {
+		cfg.sharedMaxBatchSize = 1
 	}
 
 	// Override ExclusiveMaxBatchSize if it is greater than the
 	// ExclusiveMaxQueueSize.
 	if cfg.exclusiveMaxBatchSize > cfg.exclusiveMaxQueueSize {
 		cfg.exclusiveMaxBatchSize = cfg.exclusiveMaxQueueSize
+	} else if cfg.exclusiveMaxBatchSize < 1 {
+		cfg.exclusiveMaxBatchSize = 1
 	}
 
 	return cfg

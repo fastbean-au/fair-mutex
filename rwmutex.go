@@ -11,6 +11,11 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
+/*
+	Note: because of the presence of the Lock() method, the go vet copylocks
+	check will be applied without anything else required in this code.
+*/
+
 type RWMutex struct {
 	initialised        atomic.Bool
 	config             *config
@@ -100,7 +105,7 @@ func (m *RWMutex) process() {
 
 			case loopInitLock = <-m.exclusive:
 				m.waitingOnExclusive.Store(true)
-				lockItems = min(len(m.exclusive), m.config.exclusiveMaxBatchSize)
+				lockItems = min(len(m.exclusive), m.config.exclusiveMaxBatchSize-1)
 				lockTypeTaken = exclusiveLockTaken
 
 			default:
@@ -117,7 +122,7 @@ func (m *RWMutex) process() {
 
 			case loopInitLock = <-m.shared:
 				m.waitingOnShared.Store(true)
-				lockItems = min(len(m.shared), m.config.sharedMaxBatchSize)
+				lockItems = min(len(m.shared), m.config.sharedMaxBatchSize-1)
 				lockTypeTaken = sharedLockTaken
 
 			default:
@@ -137,12 +142,12 @@ func (m *RWMutex) process() {
 
 			case loopInitLock = <-m.exclusive:
 				m.waitingOnExclusive.Store(true)
-				lockItems = min(len(m.exclusive), m.config.exclusiveMaxBatchSize)
+				lockItems = min(len(m.exclusive), m.config.exclusiveMaxBatchSize-1)
 				lockTypeTaken = exclusiveLockTaken
 
 			case loopInitLock = <-m.shared:
 				m.waitingOnShared.Store(true)
-				lockItems = min(len(m.shared), m.config.sharedMaxBatchSize)
+				lockItems = min(len(m.shared), m.config.sharedMaxBatchSize-1)
 				lockTypeTaken = sharedLockTaken
 
 			}

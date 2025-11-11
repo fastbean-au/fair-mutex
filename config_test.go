@@ -49,7 +49,7 @@ func TestMutexConfigDefaultsAndOverrides(t *testing.T) {
 			name:    "zero batch defaults to queue size",
 			options: []Option{WithMaxReadQueueSize(64), WithMaxReadBatchSize(0)},
 			expected: config{
-				sharedMaxBatchSize:    64,
+				sharedMaxBatchSize:    1,
 				sharedMaxQueueSize:    64,
 				exclusiveMaxBatchSize: 32,
 				exclusiveMaxQueueSize: 256,
@@ -64,6 +64,28 @@ func TestMutexConfigDefaultsAndOverrides(t *testing.T) {
 				sharedMaxQueueSize:    1,
 				exclusiveMaxBatchSize: 10,
 				exclusiveMaxQueueSize: 10,
+				metricName:            "go.mutex.wait.seconds",
+			},
+		},
+		{
+			name:    "batch sizes of 0",
+			options: []Option{WithMaxReadBatchSize(0), WithMaxWriteBatchSize(0)},
+			expected: config{
+				sharedMaxBatchSize:    1,
+				sharedMaxQueueSize:    1024,
+				exclusiveMaxBatchSize: 1,
+				exclusiveMaxQueueSize: 256,
+				metricName:            "go.mutex.wait.seconds",
+			},
+		},
+		{
+			name:    "batch sizes of -1",
+			options: []Option{WithMaxReadBatchSize(-1), WithMaxWriteBatchSize(-1)},
+			expected: config{
+				sharedMaxBatchSize:    1,
+				sharedMaxQueueSize:    1024,
+				exclusiveMaxBatchSize: 1,
+				exclusiveMaxQueueSize: 256,
 				metricName:            "go.mutex.wait.seconds",
 			},
 		},

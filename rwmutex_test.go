@@ -398,6 +398,110 @@ func TestFairMutexBasicOperations(t *testing.T) {
 
 	})
 
+	t.Run("TestOrderedLockingAllQueued", func(t *testing.T) {
+		m := New(
+			WithMaxReadQueueSize(1),
+			WithMaxWriteQueueSize(1024),
+		)
+		defer m.Stop()
+
+		out := make([]int, 0, 1000)
+
+		// Lock the mutex initially to allow lock requests to be queued
+		m.Lock()
+
+		for i := 0; i < 1000; i++ {
+			<-time.After(time.Millisecond) // Ensure that the funcs start in the correct order
+
+			go func() {
+				m.Lock()
+				defer m.Unlock()
+
+				out = append(out, i)
+			}()
+		}
+
+		m.Unlock()
+
+		// Wait here for a bit to allow the go funcs to acquire and release the locks
+		<-time.After(time.Second)
+
+		for i, v := range out {
+			if i != v {
+				t.Errorf("Expected ordered value to be %d, got %d", i, v)
+			}
+		}
+	})
+
+	t.Run("TestOrderedLockingInExcessOfQueue", func(t *testing.T) {
+		m := New(
+			WithMaxReadQueueSize(1),
+		)
+		defer m.Stop()
+
+		out := make([]int, 0, 1000)
+
+		// Lock the mutex initially to allow lock requests to be queued
+		m.Lock()
+
+		for i := 0; i < 1000; i++ {
+			<-time.After(time.Millisecond) // Ensure that the funcs start in the correct order
+
+			go func() {
+				m.Lock()
+				defer m.Unlock()
+
+				out = append(out, i)
+			}()
+		}
+
+		m.Unlock()
+
+		// Wait here for a bit to allow the go funcs to acquire and release the locks
+		<-time.After(time.Second)
+
+		for i := 0; i < 256; i++ {
+			if i != out[i] {
+				t.Errorf("Expected ordered value to be %d, got %d", i, out[i])
+			}
+		}
+	})
+
+	t.Run("TestOrderedRLockingAllQueued", func(t *testing.T) {
+		m := New(
+			WithMaxReadBatchSize(1),
+			WithMaxWriteQueueSize(1),
+		)
+		defer m.Stop()
+
+		out := make([]int, 0, 1000)
+
+		// Lock the mutex initially to allow lock requests to be queued
+		m.Lock()
+
+		for i := 0; i < 1000; i++ {
+			<-time.After(time.Millisecond) // Ensure that the funcs start in the correct order
+
+			go func() {
+				m.RLock()
+				defer m.RUnlock()
+
+				// Note: in normal usage, this *should* be a Lock() not an RLock() for this type of operation.
+				out = append(out, i)
+			}()
+		}
+
+		m.Unlock()
+
+		// Wait here for a bit to allow the go funcs to acquire and release the locks
+		<-time.After(time.Second)
+
+		for i, v := range out {
+			if i != v {
+				t.Errorf("Expected ordered value to be %d, got %d", i, v)
+			}
+		}
+	})
 }
 
 // Helper function to assert panic

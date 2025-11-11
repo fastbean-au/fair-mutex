@@ -14,19 +14,60 @@
 
 **fair-mutex** is a Fair RW Mutex for Go.
 
-`fair-mutex` is a mutex where write locks will not be significantly delayed in a high volume read-lock use case, while providing a limited guarantee of honouring lock request ordering (see below in [limitations](#limitations)). The larger the number of write locks required under a persistent read lock demand, the larger the performance benefit over `sync.RWMutex` that can be seen (and this is the only scenario where you might see a performance benefit - in all other cases `fair-mutex` *will* be less performant).
+`fair-mutex` is a mutex where write locks will not be significantly delayed in a high volume read-lock use case, while providing a limited guarantee of honouring lock request ordering (see below in [limitations](#limitations)). The larger the number of write locks required under a persistent read lock demand, the larger the performance benefit over `sync.RWMutex` that can be seen (and this is the only scenario where you might see a performance benefit - in **all** other cases `fair-mutex` *will* be less performant).
 
-These are perhaps fairly narrow use-cases; if you do not need either of these, then you would perhaps be better off using [go-lock](https://github.com/viney-shih/go-lock) if the built-in `sync.RWMutex` or `sync.Mutex` does not meet your needs.
+These are perhaps fairly specific use-cases; if you do not need either of these, then you would perhaps be better off using `sync.RWMutex` or `sync.Mutex` , and if those don't quite meet your needs, then [go-lock](https://github.com/viney-shih/go-lock) might also be an alternative to consider.
 
 This implementation can be used as *functional* a drop-in replacement for Go's [`sync.RWMutex`](https://pkg.go.dev/sync#RWMutex) or [`sync.Mutex`](https://pkg.go.dev/sync#Mutex) as at Go 1.25 (with [limitations](#limitations)).
 
-The general principle on which `fair-mutex` operates is that locks are given in batches alternating between write locks and read locks when both types of lock requests are queued. The batch size is determined at the beginning of a locking cycle, and are simply the lesser of the number of locks queued of the lock type at the beginning of a cycle or the maximum size limit set for that lock type.
+## How it works
+
+The general principle on which `fair-mutex` operates is that locks are given in batches alternating between write locks and read locks when both types of lock requests are queued. When no locks are queued, the first request received of either type becomes the type for that batch.
+
+The batch size is determined at the beginning of a locking cycle, and are simply the lesser of the number of locks queued of the lock type at the beginning of a cycle or the maximum size limit set for that lock type.
 
 Read locks are given concurrently for the entire batch, white write locks are given (and returned) sequentially for the entire batch.
 
 While batches are being processed, both type of lock requests are queued.
 
 Additionally, an OpenTelemetry (OTEL) metric is provided to record the lock wait times, allowing an evaluation of the effective performance of the mutex, and identification of problematic lock contention issues.
+
+### An example
+
+Where R is a R(ead) lock and W is a W(rite) lock request.
+
+Given a starting write lock with lock requests queued as below:
+
+R<sub>1</sub> R<sub>2</sub> R<sub>3</sub> R<sub>4</sub> W<sub>1</sub> W<sub>2</sub> R<sub>5</sub> R<sub>6</sub> R<sub>7</sub> W<sub>3</sub> R<sub>8</sub> W<sub>4</sub> W<sub>5</sub> W<sub>6</sub> R<sub>9</sub> R<sub>10</sub> R<sub>11</sub> R<sub>12</sub> R<sub>13</sub> R<sub>14</sub> W<sub>7</sub> W<sub>8</sub> W<sub>9</sub> W<sub>10</sub> R<sub>15</sub> R<sub>16</sub> R<sub>17</sub>
+
+Locks would expect to be issued as follows once the initial lock is unlocked (the initial lock was a write lock, so the next batch would attempt to be a batch of read locks):
+
+Batch 1: [R<sub>1</sub> R<sub>2</sub> R<sub>3</sub> R<sub>4</sub> R<sub>5</sub> R<sub>6</sub> R<sub>7</sub> R<sub>8</sub> R<sub>9</sub> R<sub>10</sub> R<sub>11</sub> R<sub>12</sub> R<sub>13</sub> R<sub>14</sub> R<sub>15</sub> R<sub>16</sub> R<sub>17</sub>]
+
+Batch 2: [
+
+W<sub>1</sub>
+
+W<sub>2</sub>
+
+W<sub>3</sub>
+
+W<sub>4</sub>
+
+W<sub>5</sub>
+
+W<sub>6</sub>
+
+W<sub>7</sub>
+
+W<sub>8</sub>
+
+W<sub>9</sub>
+
+W<sub>10</sub>
+
+]
+
 
 ## Installation
 
@@ -42,7 +83,7 @@ go get github.com/fastbean-au/fair-mutex
 
 ### Example usage
 
-```bash
+```go
 package main
 
 import (
@@ -57,6 +98,7 @@ import (
 func main() {
 
 	mtx := fairmutex.New()
+	defer mtx.Stop() // Stop the mutex to release the resources
 
 	mtx.Lock()
 	// Do something
@@ -66,16 +108,12 @@ func main() {
 	// Do something
 	mtx.RUnlock()
 
-	<-time.After(time.Millisecond)
-
 	if !mtx.TryLock() {
 		fmt.Println("Couldn't get a lock")
 	} else {
 		fmt.Println("Have a lock")
 		mtx.Unlock()
 	}
-
-	<-time.After(time.Millisecond)
 
 	if !mtx.TryRLock() {
 		fmt.Println("Couldn't get a read lock")
@@ -103,35 +141,107 @@ func main() {
 	}
 
 	wg.Wait()
+}
+```
 
-    // Stop the mutex to release the resources
-	mtx.Stop()
+### Example Usage - Ordered Mutex (write locks only)
+
+```go
+package main
+
+import (
+	"fmt"
+
+	fairmutex "github.com/fastbean-au/fair-mutex"
+)
+
+func main() {
+	mtx := fairmutex.New(fairmutex.WithMaxReadQueueSize(1))
+	defer mtx.Stop() // Stop the mutex to release the resources
+
+	// Lock the mutex initially to allow lock requests to be queued
+	mtx.Lock()
+
+	for i := 0; i < 10; i++ {
+		go func() {
+			mtx.Lock()
+			defer mtx.Unlock()
+
+			fmt.Println(i)
+		}()
+	}
+
+	mtx.Unlock()
+
+	// Wait here for a bit to allow the go funcs to acquire and release the locks
+	<-time.After(time.Second)
+}
+```
+
+### Example Usage - Ordered Mutex (read locks only)
+
+*Note:* while read locks are issued in the order requested within the limits of the queue length, if the order is an absolute requirement, the only effective way to achieve it is as below - with a read batch size of 1, which, in effect is the same as using a write lock.
+
+```go
+package main
+
+import (
+	"fmt"
+
+	fairmutex "github.com/fastbean-au/fair-mutex"
+)
+
+func main() {
+	mtx := fairmutex.New(
+			fairmutex.WithMaxReadBatchSize(1),
+			fairmutex.WithMaxWriteQueueSize(1),
+	)
+	defer mtx.Stop() // Stop the mutex to release the resources
+
+	// Lock the mutex initially to allow lock requests to be queued
+	mtx.Lock()
+
+	for i := 0; i < 10; i++ {
+		go func() {
+			mtx.RLock()
+			defer mtx.RUnlock()
+
+			fmt.Println(i)
+		}()
+	}
+
+	mtx.Unlock()
+
+	// Wait here for a bit to allow the go funcs to acquire and release the locks
+	<-time.After(time.Second)
 }
 ```
 
 ## Limitations
 
-1. Because of the way that **fair-mutex** batches locking, there is a scenario where it can cause a deadlock. This scenario is exposed by the `sync.RWMutex` unit test [doParallelReaders](https://cs.opensource.google/go/go/+/master:src/sync/rwmutex_test.go;l=28) when modified to run `fair-mutex`. Briefly, this occurs when a set of locks must be granted before any locks are released. To overcome this limitation, use the `RLockSet(n)` method to request a set of read locks. No matter how many read locks are requested in a set, only the set itself counts towards the batch limit.
+1. Because of the way that `fair-mutex` batches locking, there is a scenario where it can cause a deadlock. This scenario is exposed by the `sync.RWMutex` unit test [doParallelReaders](https://cs.opensource.google/go/go/+/master:src/sync/rwmutex_test.go;l=28) when modified to run `fair-mutex`. Briefly, this occurs when a set of locks must be granted before any locks are released. To overcome this limitation, use the `RLockSet(n)` method to request a set of read locks. No matter how many read locks are requested in a set, only the set itself counts towards the batch limit.
 
-2. Like `sync.Mutex` or `sync.RWMutex`, `fair-mutex` cannot be safely copied; however, unlike `sync.Mutex` and `sync.RWMutex`, `fair-mutex` cannot be copied at any time.
+2. Like `sync.Mutex` or `sync.RWMutex`, `fair-mutex` cannot be safely copied at any time. Attempts to copy a `fair-mutex` mutex will be highlighted by `go vet`.
 
 3. The ordering of locks is maintained as long as the number of locks of a type being requested does not exceed the queue size for that type of lock. Once exceeded, the ordering is no longer guaranteed until a new batch begins with the queue not in an overflow state.
 
 ## Configuration options
 
-**fair-mutex** provides configurable read and write queue and batch size options, as well as an options for the metric name and default metric attributes.
+`fair-mutex` provides configurable read and write queue and batch size options, as well as an options for the metric name and default metric attributes.
 
 ### WithMaxReadBatchSize
 The maximum batch size for read (also known as shared) locks. The batch size does not determine the number of calls to obtain a lock that are waiting, but the maximum number that will be processed in one locking cycle.
 
 This value cannot be larger than the MaxReadQueueSize.
 
+Minimum value of 1.
+
 Defaults to the value of MaxReadQueueSize.
 
 ### WithMaxReadQueueSize
 The maximum queue size for read (also known as shared) locks. The queue size does not determine the number of calls to obtain a lock that are waiting, but the number during which we can guarantee order. This setting will effect the memory required.
 
-Set to 1 if this mutex will only be used as a write-only mutex (but you probably don't want to do that).
+Set to 0 if this mutex will only be used as a write-only mutex (read locks are still permissible, but memory is reduced to a minimum).
 
 Defaults to 1024.
 
@@ -139,6 +249,8 @@ Defaults to 1024.
 The maximum batch size for write (also known as exclusive) locks. The batch size does not determine the number of calls to obtain a lock that are waiting, but the maximum number that will be processed in one locking cycle.
 
 This value cannot be larger than the MaxWriteQueueSize.
+
+Minimum value of 1.
 
 Defaults to 32.
 

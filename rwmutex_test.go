@@ -502,6 +502,115 @@ func TestFairMutexBasicOperations(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("TestRLockQueueExceeded", func(t *testing.T) {
+		m := New(WithMaxReadQueueSize(5))
+		defer m.Stop()
+
+		if m.HasRQueueBeenExceeded {
+			t.Fatal("HasRQueueBeenExceeded is true with no RLock queued")
+		}
+
+		// Lock the mutex so we can queue requests
+		m.Lock()
+
+		wg := new(sync.WaitGroup)
+		wg.Add(5)
+
+		for i := 0; i < 5; i++ {
+			go func() {
+				defer wg.Done()
+
+				m.RLock()
+				defer m.RUnlock() //nolint:staticcheck
+			}()
+		}
+
+		// Delay to allow the request above to be executed
+		<- time.After(time.Millisecond*5)
+
+		if m.HasRQueueBeenExceeded {
+			t.Fatal("HasRQueueBeenExceeded is true with RLock queued")
+		}
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			m.RLock()
+			defer m.RUnlock() //nolint:staticcheck
+		}()
+
+		// Delay to allow the request above to be executed
+		<- time.After(time.Millisecond*5)
+
+		if !m.HasRQueueBeenExceeded {
+			t.Fatal("HasRQueueBeenExceeded is false with RLock queue exceeded")
+		}
+
+		// Release the lock to allow the read locks to be granted
+		m.Unlock()
+
+		wg.Wait()
+
+		<- time.After(time.Millisecond*5)
+	})
+
+	t.Run("TestLockQueueExceeded", func(t *testing.T) {
+		m := New(WithMaxWriteQueueSize(5))
+		defer m.Stop()
+
+		if m.HasQueueBeenExceeded {
+			t.Fatal("HasQueueBeenExceeded is true with no Lock queued")
+		}
+
+		// Lock the mutex so we can queue requests
+		m.RLock()
+
+		wg := new(sync.WaitGroup)
+		wg.Add(5)
+
+		for i := 0; i < 5; i++ {
+			go func() {
+				defer wg.Done()
+
+				m.Lock()
+				defer m.Unlock() //nolint:staticcheck
+			}()
+		}
+
+		// Delay to allow the request above to be executed
+		<- time.After(time.Millisecond*5)
+
+		if m.HasQueueBeenExceeded {
+			t.Fatal("HasQueueBeenExceeded is true with Lock queued")
+		}
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			m.Lock()
+			defer m.Unlock() //nolint:staticcheck
+		}()
+
+		// Delay to allow the request above to be executed
+		<- time.After(time.Millisecond*5)
+
+		// Release the lock to allow the read locks to be granted
+		m.RUnlock()
+
+		wg.Wait()
+
+		// We need to give time for the first batch of Locks to be granted and
+		// released, and the final lock to get into the queue.
+		<- time.After(time.Second)
+
+		if !m.HasQueueBeenExceeded {
+			t.Fatal("HasQueueBeenExceeded is false with Lock queue exceeded")
+		}
+	})
+
 }
 
 // Helper function to assert panic

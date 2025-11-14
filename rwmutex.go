@@ -27,6 +27,24 @@ type RWMutex struct {
 	stopProcessing     chan struct{}
 	waitingOnExclusive atomic.Bool
 	waitingOnShared    atomic.Bool
+
+	// HasQueueBeenExceeded - true if the capacity of the write lock queue has
+	// been filled to the point of probable overflow.
+	//
+	// While this is not an absolute indicator that request ordering has not
+	// been able to be maintained due to the number of lock requests being
+	// queued, it is a very strong indicator that the queue size might need to
+	// be increased in order to maintain lock request ordering.
+	HasQueueBeenExceeded bool
+
+	// HasRQueueBeenExceeded - true if the capacity of the read lock queue has
+	// been filled to the point of probable overflow.
+	//
+	// While this is not an absolute indicator that request ordering has not
+	// been able to be maintained due to the number of lock requests being
+	// queued, it is a very strong indicator that the queue size might need to
+	// be increased in order to maintain lock request ordering.
+	HasRQueueBeenExceeded bool
 }
 
 type lockRequest struct {
@@ -265,6 +283,11 @@ func (m *RWMutex) RLock() {
 	l := make(chan struct{})
 	defer close(l)
 
+	// Record if the queue has exceeded capacity (or is likely to exceed capacity).
+	if !m.HasRQueueBeenExceeded && len(m.shared) == m.config.sharedMaxQueueSize {
+		m.HasRQueueBeenExceeded = true
+	}
+
 	// Request the lock
 	m.shared <- lockRequest{c: l, n: 1}
 
@@ -292,6 +315,11 @@ func (m *RWMutex) TryRLock() bool {
 		return false
 	}
 
+	// Record if the queue has exceeded capacity (or is likely to exceed capacity).
+	if !m.HasRQueueBeenExceeded && len(m.shared) == m.config.sharedMaxQueueSize {
+		m.HasRQueueBeenExceeded = true
+	}
+
 	// Request the lock
 	m.shared <- lockRequest{c: l, n: 1}
 
@@ -301,9 +329,10 @@ func (m *RWMutex) TryRLock() bool {
 	return true
 }
 
-// RUnlock - undoes a single fairmutex.RLock call; it does not affect other
-// simultaneous readers. It is a run-time error if rw is not locked for reading
-// on entry to RUnlock.
+// RUnlock - undoes a single RLock or TryRLock call that succeeded; it does not
+// affect other simultaneous readers.
+//
+// It is a run-time error if rw is not locked for reading on entry to RUnlock.
 func (m *RWMutex) RUnlock() {
 	if !m.initialised.Load() {
 		panic("attempt to use fair-mutex uninitialised")
@@ -334,6 +363,11 @@ func (m *RWMutex) Lock() {
 	l := make(chan struct{})
 	defer close(l)
 
+	// Record if the queue has exceeded capacity (or is likely to exceed capacity).
+	if !m.HasQueueBeenExceeded && len(m.exclusive) == m.config.exclusiveMaxQueueSize {
+		m.HasQueueBeenExceeded = true
+	}
+
 	// Request the lock
 	m.exclusive <- lockRequest{c: l, n: 1}
 
@@ -362,6 +396,11 @@ func (m *RWMutex) TryLock() bool {
 		return false
 	}
 
+	// Record if the queue has exceeded capacity (or is likely to exceed capacity).
+	if !m.HasQueueBeenExceeded && len(m.shared) == m.config.exclusiveMaxQueueSize {
+		m.HasQueueBeenExceeded = true
+	}
+
 	// Request the lock
 	m.exclusive <- lockRequest{c: l, n: 1}
 
@@ -371,13 +410,14 @@ func (m *RWMutex) TryLock() bool {
 	return true
 }
 
-// Unlock - unlocks rw for writing. It is a run-time error if rw is not locked
-// for writing on entry to Unlock.
+// Unlock - undoes a single Lock or TryLock call that succeeded.
 //
-// As with Mutexes, a locked FairMutex is not associated with a particular
-// goroutine. One goroutine may fairmutex.RLock (fairmutex.Lock) a FairMutex and
-// then arrange for another goroutine to fairmutex.RUnlock (fairmutex.Unlock)
-// it.
+// It is a run-time error if the mutex is not locked for writing on entry to
+// Unlock.
+//
+// A locked mutex is not associated with a particular goroutine or lock request.
+// One goroutine may Lock a mutex and then arrange for another goroutine to
+// Unlock it.
 func (m *RWMutex) Unlock() {
 	if !m.initialised.Load() {
 		panic("attempt to use fair-mutex uninitialised")

@@ -14,19 +14,67 @@ import (
 /*
 	Note: because of the presence of the Lock() method, the go vet copylocks
 	check will be applied without anything else required in this code.
+
+	A note on the documentation:
+
+	The README file uses read/write semantics for the mutex keeping in line with
+	the names of the methods. Internally, the code and comments will typically
+	use shared and exclusive semantics, better(?) reflecting the nature of the
+	mutex and the implementation.
+
+	To prevent any doubt at all, a read lock is a shared lock, and a write lock
+	is an exclusive lock.
+
+	A note on performance:
+
+	This implementation of a mutex performs much worse than the built-in RWMutex
+	from the sync package.
+
+	I have explored using sync.Pool to facilitate the re-use of the response
+	channels. It performed worse.
+
+	I have also explored the use of a channel to provide a pool of pre-created
+	response channels. This also performed slightly worse.
 */
 
 type RWMutex struct {
-	initialised        atomic.Bool
-	config             *config
-	histogram          metric.Float64Histogram
-	exclusive          chan lockRequest
-	shared             chan lockRequest
-	releaseExclusive   chan chan struct{}
-	releaseShared      chan chan struct{}
-	stopProcessing     chan struct{}
+	// True when initialisation of the mutex is complete. used to prevent un-
+	// initialised use of the mutex (i.e. when the mutex will not function as
+	// a mutex).
+	initialised atomic.Bool
+
+	config *config
+
+	// The OpenTelemetry metric which we record lock wait times.
+	histogram metric.Float64Histogram
+
+	// Pre-created attribute sets for the lock wait histogram
+	rLockSetAttrs attribute.Set
+	rLockAttrs    attribute.Set
+	lockAttrs     attribute.Set
+
+	// Channel to hold exclusive lock requests
+	exclusiveQueue chan *lockRequest
+
+	// Channel to hold shared lock requests
+	sharedQueue chan *lockRequest
+
+	// Channel used to communicate releasing write/exclusive locks
+	releaseExclusive chan chan struct{}
+
+	releaseShared chan chan struct{}
+
+	// Channel used to signal to the processing go func that it should stop
+	// processing locks and exit.
+	stopProcessing chan struct{}
+
+	// When true, we are waiting on exclusive locks to be released (exclusive
+	// locks are being held).
 	waitingOnExclusive atomic.Bool
-	waitingOnShared    atomic.Bool
+
+	// When true, we are waiting on shared locks to be released (shared locks
+	// are being held).
+	waitingOnShared atomic.Bool
 
 	// HasQueueBeenExceeded - true if the capacity of the write lock queue has
 	// been filled to the point of probable overflow.
@@ -74,11 +122,14 @@ func New(options ...Option) *RWMutex {
 	m := &RWMutex{
 		config:           cfg,
 		histogram:        histogram,
-		exclusive:        make(chan lockRequest, cfg.exclusiveMaxQueueSize),
-		shared:           make(chan lockRequest, cfg.sharedMaxQueueSize),
+		exclusiveQueue:   make(chan *lockRequest, cfg.exclusiveMaxQueueSize),
+		sharedQueue:      make(chan *lockRequest, cfg.sharedMaxQueueSize),
 		releaseExclusive: make(chan chan struct{}),
 		releaseShared:    make(chan chan struct{}, cfg.sharedMaxBatchSize),
 		stopProcessing:   make(chan struct{}),
+		rLockSetAttrs:    attribute.NewSet(append(cfg.metricAttributes, attribute.String("operation", "RLockSet"))...),
+		rLockAttrs:       attribute.NewSet(append(cfg.metricAttributes, attribute.String("operation", "RLock"))...),
+		lockAttrs:        attribute.NewSet(append(cfg.metricAttributes, attribute.String("operation", "Lock"))...),
 	}
 
 	go m.process()
@@ -88,6 +139,7 @@ func New(options ...Option) *RWMutex {
 	return m
 }
 
+// Lock processing states
 const (
 	noLockTaken = iota
 	sharedLockTaken
@@ -107,7 +159,7 @@ func (m *RWMutex) Stop() {
 func (m *RWMutex) process() {
 	defer m.cleanup()
 
-	var loopInitLock lockRequest
+	var loopInitLock *lockRequest
 	var lockItems int
 	lockTypeTaken := noLockTaken
 
@@ -121,9 +173,9 @@ func (m *RWMutex) process() {
 			case <-m.stopProcessing:
 				return
 
-			case loopInitLock = <-m.exclusive:
+			case loopInitLock = <-m.exclusiveQueue:
 				m.waitingOnExclusive.Store(true)
-				lockItems = min(len(m.exclusive), m.config.exclusiveMaxBatchSize-1)
+				lockItems = min(len(m.exclusiveQueue), m.config.exclusiveMaxBatchSize-1)
 				lockTypeTaken = exclusiveLockTaken
 
 			default:
@@ -138,9 +190,9 @@ func (m *RWMutex) process() {
 			case <-m.stopProcessing:
 				return
 
-			case loopInitLock = <-m.shared:
+			case loopInitLock = <-m.sharedQueue:
 				m.waitingOnShared.Store(true)
-				lockItems = min(len(m.shared), m.config.sharedMaxBatchSize-1)
+				lockItems = min(len(m.sharedQueue), m.config.sharedMaxBatchSize-1)
 				lockTypeTaken = sharedLockTaken
 
 			default:
@@ -158,14 +210,14 @@ func (m *RWMutex) process() {
 			case <-m.stopProcessing:
 				return
 
-			case loopInitLock = <-m.exclusive:
+			case loopInitLock = <-m.exclusiveQueue:
 				m.waitingOnExclusive.Store(true)
-				lockItems = min(len(m.exclusive), m.config.exclusiveMaxBatchSize-1)
+				lockItems = min(len(m.exclusiveQueue), m.config.exclusiveMaxBatchSize-1)
 				lockTypeTaken = exclusiveLockTaken
 
-			case loopInitLock = <-m.shared:
+			case loopInitLock = <-m.sharedQueue:
 				m.waitingOnShared.Store(true)
-				lockItems = min(len(m.shared), m.config.sharedMaxBatchSize-1)
+				lockItems = min(len(m.sharedQueue), m.config.sharedMaxBatchSize-1)
 				lockTypeTaken = sharedLockTaken
 
 			}
@@ -182,7 +234,7 @@ func (m *RWMutex) process() {
 
 			for range lockItems {
 				// Grab the lock request
-				l := <-m.shared
+				l := <-m.sharedQueue
 
 				// Signal to the requester that they now have the lock
 				l.c <- struct{}{}
@@ -201,10 +253,9 @@ func (m *RWMutex) process() {
 					}
 
 					// Signal back that the lock has been released
-					u<-struct{}{}
+					u <- struct{}{}
 				}
 			}
-
 
 		case exclusiveLockTaken:
 			// Process exclusive locks - grant and wait for each lock to be returned
@@ -218,17 +269,17 @@ func (m *RWMutex) process() {
 			case <-m.stopProcessing:
 				return
 			case u := <-m.releaseExclusive:
-					if lockItems == 0 {
-						m.waitingOnExclusive.Store(false)
-					}
+				if lockItems == 0 {
+					m.waitingOnExclusive.Store(false)
+				}
 
-					// Signal back that the lock has been released
-					u<-struct{}{}
+				// Signal back that the lock has been released
+				u <- struct{}{}
 
 				// Remaining exclusive lock requests
 				for n := 1; n <= lockItems; n++ {
 					// Grab the lock request
-					l := <-m.exclusive
+					l := <-m.exclusiveQueue
 
 					// Signal to the requester that they now have the lock
 					l.c <- struct{}{}
@@ -243,7 +294,7 @@ func (m *RWMutex) process() {
 						}
 
 						// Signal back that the lock has been released
-						u<-struct{}{}
+						u <- struct{}{}
 					}
 				}
 
@@ -258,8 +309,8 @@ func (m *RWMutex) process() {
 func (m *RWMutex) cleanup() {
 	m.initialised.Store(false)
 
-	close(m.exclusive)
-	close(m.shared)
+	close(m.exclusiveQueue)
+	close(m.sharedQueue)
 	close(m.releaseExclusive)
 	close(m.releaseShared)
 }
@@ -280,23 +331,21 @@ func (m *RWMutex) RLock() {
 
 	start := time.Now()
 
-	l := make(chan struct{})
-	defer close(l)
+	r := make(chan struct{})
+	defer close(r)
 
 	// Record if the queue has exceeded capacity (or is likely to exceed capacity).
-	if !m.HasRQueueBeenExceeded && len(m.shared) == m.config.sharedMaxQueueSize {
+	if !m.HasRQueueBeenExceeded && len(m.sharedQueue) == m.config.sharedMaxQueueSize {
 		m.HasRQueueBeenExceeded = true
 	}
 
 	// Request the lock
-	m.shared <- lockRequest{c: l, n: 1}
+	m.sharedQueue <- &lockRequest{c: r, n: 1}
 
 	// Wait for the lock to be granted
-	<-l
+	<-r
 
-	m.histogram.Record(context.Background(), time.Since(start).Seconds(), metric.WithAttributes(
-		append(m.config.metricAttributes, attribute.String("operation", "RLock"))...,
-	))
+	m.histogram.Record(context.Background(), time.Since(start).Seconds(), metric.WithAttributeSet(m.rLockAttrs))
 }
 
 // TryRLock - tries to lock rw for reading and reports whether it succeeded.
@@ -308,23 +357,23 @@ func (m *RWMutex) TryRLock() bool {
 		panic("attempt to use fair-mutex uninitialised")
 	}
 
-	l := make(chan struct{})
-	defer close(l)
+	r := make(chan struct{})
+	defer close(r)
 
-	if m.waitingOnExclusive.Load() || m.waitingOnShared.Load() || len(m.exclusive) > 0 || len(m.shared) > 0 {
+	if m.waitingOnExclusive.Load() || m.waitingOnShared.Load() || len(m.exclusiveQueue) > 0 || len(m.sharedQueue) > 0 {
 		return false
 	}
 
 	// Record if the queue has exceeded capacity (or is likely to exceed capacity).
-	if !m.HasRQueueBeenExceeded && len(m.shared) == m.config.sharedMaxQueueSize {
+	if !m.HasRQueueBeenExceeded && len(m.sharedQueue) == m.config.sharedMaxQueueSize {
 		m.HasRQueueBeenExceeded = true
 	}
 
 	// Request the lock
-	m.shared <- lockRequest{c: l, n: 1}
+	m.sharedQueue <- &lockRequest{c: r, n: 1}
 
 	// Wait for the lock to be granted
-	<-l
+	<-r
 
 	return true
 }
@@ -342,13 +391,13 @@ func (m *RWMutex) RUnlock() {
 		panic("fair-mutex: RUnlock of unlocked RWMutex")
 	}
 
-	u := make(chan struct{})
-	defer close(u)
+	r := make(chan struct{})
+	defer close(r)
 
-	m.releaseShared <- u
+	m.releaseShared <- r
 
 	// Wait for the lock to be released
-	<-u
+	<-r
 }
 
 // Lock - locks the mutex for writing. If the mutex is already locked for
@@ -360,23 +409,21 @@ func (m *RWMutex) Lock() {
 
 	start := time.Now()
 
-	l := make(chan struct{})
-	defer close(l)
-
 	// Record if the queue has exceeded capacity (or is likely to exceed capacity).
-	if !m.HasQueueBeenExceeded && len(m.exclusive) == m.config.exclusiveMaxQueueSize {
+	if !m.HasQueueBeenExceeded && len(m.exclusiveQueue) == m.config.exclusiveMaxQueueSize {
 		m.HasQueueBeenExceeded = true
 	}
 
+	r := make(chan struct{})
+	defer close(r)
+
 	// Request the lock
-	m.exclusive <- lockRequest{c: l, n: 1}
+	m.exclusiveQueue <- &lockRequest{c: r, n: 1}
 
 	// Wait for the lock to be granted
-	<-l
+	<-r
 
-	m.histogram.Record(context.Background(), time.Since(start).Seconds(), metric.WithAttributes(
-		append(m.config.metricAttributes, attribute.String("operation", "Lock"))...,
-	))
+	m.histogram.Record(context.Background(), time.Since(start).Seconds(), metric.WithAttributeSet(m.lockAttrs))
 }
 
 // TryLock - tries to lock rw for writing and reports whether it succeeded.
@@ -388,24 +435,24 @@ func (m *RWMutex) TryLock() bool {
 		panic("attempt to use fair-mutex uninitialised")
 	}
 
-	l := make(chan struct{})
-	defer close(l)
-
 	// See if there are any lock requests or locks active
-	if m.waitingOnExclusive.Load() || m.waitingOnShared.Load() || len(m.exclusive) > 0 || len(m.shared) > 0 {
+	if m.waitingOnExclusive.Load() || m.waitingOnShared.Load() || len(m.exclusiveQueue) > 0 || len(m.sharedQueue) > 0 {
 		return false
 	}
 
 	// Record if the queue has exceeded capacity (or is likely to exceed capacity).
-	if !m.HasQueueBeenExceeded && len(m.shared) == m.config.exclusiveMaxQueueSize {
+	if !m.HasQueueBeenExceeded && len(m.sharedQueue) == m.config.exclusiveMaxQueueSize {
 		m.HasQueueBeenExceeded = true
 	}
 
+	r := make(chan struct{})
+	defer close(r)
+
 	// Request the lock
-	m.exclusive <- lockRequest{c: l, n: 1}
+	m.exclusiveQueue <- &lockRequest{c: r, n: 1}
 
 	// Wait on the lock to be granted
-	<-l
+	<-r
 
 	return true
 }
@@ -427,13 +474,13 @@ func (m *RWMutex) Unlock() {
 		panic("fair-mutex: Unlock of unlocked RWMutex")
 	}
 
-	u := make(chan struct{})
-	defer close(u)
+	r := make(chan struct{})
+	defer close(r)
 
-	m.releaseExclusive <- u
+	m.releaseExclusive <- r
 
 	// Wait for the lock to be released
-	<-u
+	<-r
 }
 
 // RLocker - returns a [Locker] interface that implements the [Locker.Lock] and
@@ -449,7 +496,7 @@ func (r *rlocker) Unlock() { (*RWMutex)(r).RUnlock() }
 
 // Extension methods
 
-// RLockSet - locks the mutex for reading, granting the requested number of 
+// RLockSet - locks the mutex for reading, granting the requested number of
 // locks. RUnlock must be called one for each of the requested number of locks.
 //
 // Use RLockSet when a set of read locks is required to be granted at the same
@@ -466,16 +513,14 @@ func (m *RWMutex) RLockSet(number int) {
 
 	start := time.Now()
 
-	l := make(chan struct{})
-	defer close(l)
+	r := make(chan struct{})
+	defer close(r)
 
 	// Request the lock
-	m.shared <- lockRequest{c: l, n: number}
+	m.sharedQueue <- &lockRequest{c: r, n: number}
 
 	// Wait for the lock to be granted
-	<-l
+	<-r
 
-	m.histogram.Record(context.Background(), time.Since(start).Seconds(), metric.WithAttributes(
-		append(m.config.metricAttributes, attribute.String("operation", "RLockSet"))...,
-	))
+	m.histogram.Record(context.Background(), time.Since(start).Seconds(), metric.WithAttributeSet(m.rLockSetAttrs))
 }

@@ -18,7 +18,7 @@
 
 These are perhaps fairly specific use-cases; if you do not need either of these, then you would perhaps be better off using `sync.RWMutex` or `sync.Mutex` , and if those don't quite meet your needs, then [go-lock](https://github.com/viney-shih/go-lock) might also be an alternative to consider.
 
-This implementation can be used as *functional* a drop-in replacement for Go's [`sync.RWMutex`](https://pkg.go.dev/sync#RWMutex) or [`sync.Mutex`](https://pkg.go.dev/sync#Mutex) as at Go 1.25 (with [limitations](#limitations)).
+This implementation can be used as a *functional* drop-in replacement for Go's [`sync.RWMutex`](https://pkg.go.dev/sync#RWMutex) or [`sync.Mutex`](https://pkg.go.dev/sync#Mutex) as at Go 1.25 (with [limitations](#limitations)).
 
 In addition to supporting the methods provided by `sync.RWMutex`, a helper method `RLockSet(int)` is provided to facilitate requesting a set of read locks in a single batch.
 
@@ -30,7 +30,7 @@ The general principle on which `fair-mutex` operates is that locks are given in 
 
 The batch size is determined at the beginning of a locking cycle, and are simply the lesser of the number of locks queued of the lock type at the beginning of a cycle or the maximum size limit set for that lock type.
 
-Read locks are given concurrently for the entire batch, white write locks are given (and returned) sequentially for the entire batch.
+Read locks are given concurrently for the entire batch, while write locks are given (and returned) sequentially for the entire batch.
 
 While batches are being processed, both type of lock requests are queued.
 
@@ -78,6 +78,24 @@ W<sub>10</sub>
 ```bash
 go get github.com/fastbean-au/fair-mutex
 ```
+
+## Static Analysis
+
+A companion static analyzer, `fairmutexcheck`, is included in this repository. It catches common misuse patterns at compile time:
+
+- Direct instantiation (`fairmutex.RWMutex{}`, `&fairmutex.RWMutex{}`, `new(fairmutex.RWMutex)`) instead of `New()`
+- Calling `New()` without a corresponding `Stop()` (including `Stop()` called via `defer`, or from a goroutine closure in the same function)
+
+```bash
+# Build and run as a standalone checker
+go build -o fairmutexcheck ./cmd/fairmutexcheck
+./fairmutexcheck ./...
+
+# Or integrate with go vet
+go vet -vettool=./fairmutexcheck ./...
+```
+
+See [`cmd/fairmutexcheck/README.md`](cmd/fairmutexcheck/README.md) for full details.
 
 ## Usage
 

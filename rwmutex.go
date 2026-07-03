@@ -2,6 +2,7 @@ package fairmutex
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -58,6 +59,14 @@ type RWMutex struct {
 
 	// Channel to hold shared lock requests
 	sharedQueue chan *lockRequest
+
+	// Channels used to hand a try-lock request directly to the processor.
+	// These are unbuffered so that a non-blocking send can only succeed when
+	// the processor is parked waiting for work, which is exactly when the
+	// mutex is free. Try requests never enter the queues, so a failed try
+	// leaves no state behind.
+	tryExclusive chan *lockRequest
+	tryShared    chan *lockRequest
 
 	// Channel used to communicate releasing write/exclusive locks
 	releaseExclusive chan chan struct{}
@@ -124,6 +133,8 @@ func New(options ...Option) *RWMutex {
 		histogram:        histogram,
 		exclusiveQueue:   make(chan *lockRequest, cfg.exclusiveMaxQueueSize),
 		sharedQueue:      make(chan *lockRequest, cfg.sharedMaxQueueSize),
+		tryExclusive:     make(chan *lockRequest),
+		tryShared:        make(chan *lockRequest),
 		releaseExclusive: make(chan chan struct{}),
 		releaseShared:    make(chan chan struct{}, cfg.sharedMaxBatchSize),
 		stopProcessing:   make(chan struct{}),
@@ -132,7 +143,18 @@ func New(options ...Option) *RWMutex {
 		lockAttrs:        attribute.NewSet(append(cfg.metricAttributes, attribute.String("operation", "Lock"))...),
 	}
 
-	go m.process()
+	// Wait until the processing goroutine is running before returning, so
+	// that the mutex is immediately usable - in particular by TryLock and
+	// TryRLock, which can only succeed once the processor is waiting for
+	// work.
+	started := make(chan struct{})
+
+	go func() {
+		close(started)
+		m.process()
+	}()
+
+	<-started
 
 	m.initialised.Store(true)
 
@@ -204,6 +226,8 @@ func (m *RWMutex) process() {
 
 		// If this is the initial loop or there were no locks waiting of the opposite type to the last batch, then
 		// we'll randomly select which type of lock to grant (given one of each type is requested simultaneously).
+		// Try-lock requests are only received here: a try-lock can only succeed when the processor is otherwise
+		// idle, i.e. when the mutex is free.
 		if lockTypeTaken == noLockTaken {
 			select {
 
@@ -216,6 +240,16 @@ func (m *RWMutex) process() {
 				lockTypeTaken = exclusiveLockTaken
 
 			case loopInitLock = <-m.sharedQueue:
+				m.waitingOnShared.Store(true)
+				lockItems = min(len(m.sharedQueue), m.config.sharedMaxBatchSize-1)
+				lockTypeTaken = sharedLockTaken
+
+			case loopInitLock = <-m.tryExclusive:
+				m.waitingOnExclusive.Store(true)
+				lockItems = min(len(m.exclusiveQueue), m.config.exclusiveMaxBatchSize-1)
+				lockTypeTaken = exclusiveLockTaken
+
+			case loopInitLock = <-m.tryShared:
 				m.waitingOnShared.Store(true)
 				lockItems = min(len(m.sharedQueue), m.config.sharedMaxBatchSize-1)
 				lockTypeTaken = sharedLockTaken
@@ -349,6 +383,9 @@ func (m *RWMutex) RLock() {
 }
 
 // TryRLock - tries to lock rw for reading and reports whether it succeeded.
+// It never blocks waiting for the lock: it succeeds only when the mutex is
+// completely free (no locks held and no requests queued), and may fail
+// spuriously when the mutex has only just become free.
 //
 // Note that while correct uses of TryRLock do exist, they are rare, and use of
 // TryRLock is often a sign of a deeper problem in a particular use of mutexes.
@@ -357,25 +394,15 @@ func (m *RWMutex) TryRLock() bool {
 		panic("attempt to use fair-mutex uninitialised")
 	}
 
-	r := make(chan struct{})
-	defer close(r)
-
+	// See if there are any lock requests or locks active
 	if m.waitingOnExclusive.Load() || m.waitingOnShared.Load() || len(m.exclusiveQueue) > 0 || len(m.sharedQueue) > 0 {
 		return false
 	}
 
-	// Record if the queue has exceeded capacity (or is likely to exceed capacity).
-	if !m.HasRQueueBeenExceeded && len(m.sharedQueue) == m.config.sharedMaxQueueSize {
-		m.HasRQueueBeenExceeded = true
-	}
+	r := make(chan struct{})
+	defer close(r)
 
-	// Request the lock
-	m.sharedQueue <- &lockRequest{c: r, n: 1}
-
-	// Wait for the lock to be granted
-	<-r
-
-	return true
+	return m.tryRequest(m.tryShared, &lockRequest{c: r, n: 1})
 }
 
 // RUnlock - undoes a single RLock or TryRLock call that succeeded; it does not
@@ -427,6 +454,9 @@ func (m *RWMutex) Lock() {
 }
 
 // TryLock - tries to lock rw for writing and reports whether it succeeded.
+// It never blocks waiting for the lock: it succeeds only when the mutex is
+// completely free (no locks held and no requests queued), and may fail
+// spuriously when the mutex has only just become free.
 //
 // Note that while correct uses of TryLock do exist, they are rare, and use of
 // TryLock is often a sign of a deeper problem in a particular use of mutexes.
@@ -440,21 +470,41 @@ func (m *RWMutex) TryLock() bool {
 		return false
 	}
 
-	// Record if the queue has exceeded capacity (or is likely to exceed capacity).
-	if !m.HasQueueBeenExceeded && len(m.sharedQueue) == m.config.exclusiveMaxQueueSize {
-		m.HasQueueBeenExceeded = true
-	}
-
 	r := make(chan struct{})
 	defer close(r)
 
-	// Request the lock
-	m.exclusiveQueue <- &lockRequest{c: r, n: 1}
+	return m.tryRequest(m.tryExclusive, &lockRequest{c: r, n: 1})
+}
 
-	// Wait on the lock to be granted
-	<-r
+// tryRequest - attempts to hand a try-lock request directly to the processor
+// without blocking. The try channels are unbuffered, so the send can only
+// succeed when the processor is parked waiting for work - that is, when the
+// mutex is free. The processor takes a moment to park after starting up or
+// after releasing the previous lock, so we retry - first yielding, then
+// briefly sleeping - before reporting failure. On a free mutex the send
+// succeeds within the first attempt or two; the full retry budget (well under
+// a millisecond) is only spent when the try fails.
+func (m *RWMutex) tryRequest(tryChannel chan *lockRequest, request *lockRequest) bool {
+	for attempt := range 12 {
+		select {
 
-	return true
+		case tryChannel <- request:
+			// Wait for the lock to be granted
+			<-request.c
+
+			return true
+
+		default:
+			if attempt < 8 {
+				runtime.Gosched()
+			} else {
+				time.Sleep(10 * time.Microsecond)
+			}
+
+		}
+	}
+
+	return false
 }
 
 // Unlock - undoes a single Lock or TryLock call that succeeded.

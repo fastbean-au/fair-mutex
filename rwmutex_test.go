@@ -952,3 +952,93 @@ func TestBatchedReadProcessing(t *testing.T) {
 		t.Error("Did not expect the write lock at the end")
 	}
 }
+
+// TestTryLockDoesNotRecordQueueExceeded - exposes the bug where TryLock
+// checked the length of the shared queue against the exclusive queue's
+// capacity. With a write queue size of zero, a single TryLock on a free mutex
+// wrongly recorded the write queue as having been exceeded.
+func TestTryLockDoesNotRecordQueueExceeded(t *testing.T) {
+	m := New(WithMaxWriteQueueSize(0))
+	defer m.Stop()
+
+	if !m.TryLock() {
+		t.Fatal("TryLock failed on a free mutex")
+	}
+
+	m.Unlock()
+
+	if m.HasQueueBeenExceeded {
+		t.Error("TryLock recorded the write queue as exceeded on a free mutex")
+	}
+
+	if m.HasRQueueBeenExceeded {
+		t.Error("TryLock recorded the read queue as exceeded on a free mutex")
+	}
+}
+
+// TestTryLocksDoNotBlock - exposes the bug where two concurrent Try* calls
+// could both pass the availability check and both enqueue, leaving the loser
+// blocked until the winner released the lock - which is exactly what a
+// try-lock must never do. Every Try* call must return promptly whether or not
+// it obtained the lock.
+func TestTryLocksDoNotBlock(t *testing.T) {
+	const iterations = 1000
+	const contenders = 4
+
+	for range iterations {
+		m := New()
+
+		results := make(chan bool, contenders)
+
+		// Half the contenders race for write locks, half for read locks
+		for i := range contenders {
+			exclusive := i%2 == 0
+			go func() {
+				if exclusive {
+					results <- m.TryLock()
+				} else {
+					results <- m.TryRLock()
+				}
+			}()
+		}
+
+		// Any contender that fails to obtain the lock must return false
+		// promptly; it must not wait for the lock to be released, as the
+		// winner does not release until all contenders have reported.
+		granted := 0
+		timeout := time.After(5 * time.Second)
+
+	CONTENDER_LOOP:
+		for range contenders {
+			select {
+
+			case r := <-results:
+				if r {
+					granted++
+				}
+
+				continue CONTENDER_LOOP
+
+			case <-timeout:
+				t.Fatal("a Try* call blocked waiting for the lock to be released")
+
+			}
+		}
+
+		if granted > 1 {
+			t.Fatalf("%d Try* calls succeeded simultaneously; expected at most 1", granted)
+		}
+
+		// Whichever type won, a single release of that type is correct; the
+		// winner reported true for exactly one of TryLock/TryRLock.
+		if granted == 1 {
+			if m.waitingOnExclusive.Load() {
+				m.Unlock()
+			} else {
+				m.RUnlock()
+			}
+		}
+
+		m.Stop()
+	}
+}

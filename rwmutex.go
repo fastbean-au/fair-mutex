@@ -415,8 +415,10 @@ func (m *RWMutex) RLock() {
 	// this goroutine to be scheduled to receive; in a large shared batch this
 	// lets the processor fire every grant back-to-back and the requesters
 	// wake in parallel.
+	// The channel is deliberately not closed: nothing ever receives from it
+	// again after the single grant, and an unreferenced channel is garbage
+	// collected.
 	r := make(chan struct{}, 1)
-	defer close(r)
 
 	// Record if the queue has exceeded capacity (or is likely to exceed capacity).
 	if !m.hasRQueueBeenExceeded.Load() && len(m.sharedQueue) == m.config.sharedMaxQueueSize {
@@ -459,8 +461,10 @@ func (m *RWMutex) TryRLock() bool {
 	// this goroutine to be scheduled to receive; in a large shared batch this
 	// lets the processor fire every grant back-to-back and the requesters
 	// wake in parallel.
+	// The channel is deliberately not closed: nothing ever receives from it
+	// again after the single grant, and an unreferenced channel is garbage
+	// collected.
 	r := make(chan struct{}, 1)
-	defer close(r)
 
 	return m.tryRequest(m.tryShared, &lockRequest{c: r, n: 1})
 }
@@ -505,8 +509,10 @@ func (m *RWMutex) Lock() {
 	// this goroutine to be scheduled to receive; in a large shared batch this
 	// lets the processor fire every grant back-to-back and the requesters
 	// wake in parallel.
+	// The channel is deliberately not closed: nothing ever receives from it
+	// again after the single grant, and an unreferenced channel is garbage
+	// collected.
 	r := make(chan struct{}, 1)
-	defer close(r)
 
 	request := &lockRequest{c: r, n: 1}
 
@@ -544,8 +550,10 @@ func (m *RWMutex) TryLock() bool {
 	// this goroutine to be scheduled to receive; in a large shared batch this
 	// lets the processor fire every grant back-to-back and the requesters
 	// wake in parallel.
+	// The channel is deliberately not closed: nothing ever receives from it
+	// again after the single grant, and an unreferenced channel is garbage
+	// collected.
 	r := make(chan struct{}, 1)
-	defer close(r)
 
 	return m.tryRequest(m.tryExclusive, &lockRequest{c: r, n: 1})
 }
@@ -650,8 +658,10 @@ func (m *RWMutex) RLockSet(number int) {
 	// this goroutine to be scheduled to receive; in a large shared batch this
 	// lets the processor fire every grant back-to-back and the requesters
 	// wake in parallel.
+	// The channel is deliberately not closed: nothing ever receives from it
+	// again after the single grant, and an unreferenced channel is garbage
+	// collected.
 	r := make(chan struct{}, 1)
-	defer close(r)
 
 	// Record if the queue has exceeded capacity (or is likely to exceed capacity).
 	if !m.hasRQueueBeenExceeded.Load() && len(m.sharedQueue) == m.config.sharedMaxQueueSize {

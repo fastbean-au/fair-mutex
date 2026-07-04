@@ -990,6 +990,10 @@ func TestBatchedReadProcessing(t *testing.T) {
 // checked the length of the shared queue against the exclusive queue's
 // capacity. With a write queue size of zero, a single TryLock on a free mutex
 // wrongly recorded the write queue as having been exceeded.
+//
+// Note: queue sizes below one are now clamped to one, so the zero-size setup
+// that originally exposed the bug no longer occurs; the test remains as a
+// check that the Try methods never record queue-exceeded state.
 func TestTryLockDoesNotRecordQueueExceeded(t *testing.T) {
 	m := New(WithMaxWriteQueueSize(0))
 	defer m.Stop()

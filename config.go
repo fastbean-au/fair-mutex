@@ -25,6 +25,19 @@ func getConfig(options ...Option) *config {
 		option(cfg)
 	}
 
+	// Queue sizes must be at least 1: a zero size would drag the batch size
+	// clamps below to zero, and a negative size would panic in make() when
+	// the queue channels are created. The queue sizes must be clamped before
+	// the batch sizes so that a batch size clamped to its queue size is
+	// always at least 1.
+	if cfg.sharedMaxQueueSize < 1 {
+		cfg.sharedMaxQueueSize = 1
+	}
+
+	if cfg.exclusiveMaxQueueSize < 1 {
+		cfg.exclusiveMaxQueueSize = 1
+	}
+
 	// Override SharedMaxBatchSize if it is greater than the SharedMaxQueueSize
 	// or is zero.
 	if cfg.sharedMaxBatchSize > cfg.sharedMaxQueueSize {
@@ -68,6 +81,8 @@ func WithMaxReadBatchSize(length int) Option {
 // Set to 1 if this mutex will only be used as a write-only mutex  (but you
 // probably don't want to do that).
 //
+// Values less than 1 are treated as 1.
+//
 // Defaults to 1024.
 func WithMaxReadQueueSize(length int) Option {
 	return func(c *config) {
@@ -93,6 +108,8 @@ func WithMaxWriteBatchSize(length int) Option {
 // exclusive) locks. The queue size does not determine the number of calls to
 // obtain a lock that are waiting, but the number during which we can guarantee
 // order. This setting will effect the memory required.
+//
+// Values less than 1 are treated as 1.
 //
 // Defaults to 256.
 func WithMaxWriteQueueSize(length int) Option {

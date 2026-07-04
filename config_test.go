@@ -90,6 +90,34 @@ func TestMutexConfigDefaultsAndOverrides(t *testing.T) {
 			},
 		},
 		{
+			// Exposes the clamping-order bug: a queue size of zero was left
+			// at zero, and dragged the batch size down to zero with it - the
+			// batch size's own minimum-of-one clamp never ran because it was
+			// in an else-if behind the larger-than-queue check.
+			name:    "zero queue sizes get clamped",
+			options: []Option{WithMaxReadQueueSize(0), WithMaxWriteQueueSize(0)},
+			expected: config{
+				sharedMaxBatchSize:    1,
+				sharedMaxQueueSize:    1,
+				exclusiveMaxBatchSize: 1,
+				exclusiveMaxQueueSize: 1,
+				metricName:            "go.mutex.wait.seconds",
+			},
+		},
+		{
+			// Exposes the missing validation of queue sizes: a negative size
+			// panicked in make() when New created the queue channels.
+			name:    "negative queue sizes get clamped",
+			options: []Option{WithMaxReadQueueSize(-5), WithMaxWriteQueueSize(-5)},
+			expected: config{
+				sharedMaxBatchSize:    1,
+				sharedMaxQueueSize:    1,
+				exclusiveMaxBatchSize: 1,
+				exclusiveMaxQueueSize: 1,
+				metricName:            "go.mutex.wait.seconds",
+			},
+		},
+		{
 			name:    "metrics config",
 			options: []Option{WithMetricName("my.metric"), WithMetricAttributes(attribute.Int("my_attribute", 42))},
 			expected: config{

@@ -33,3 +33,5 @@ go.work.sum
 
 release.txt
 bench.out
+tables.md
+.venv/

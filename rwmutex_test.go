@@ -1200,3 +1200,69 @@ WAIT_LOOP:
 		}
 	}
 }
+
+// TestRLockSetValidation - exposes the bug where RLockSet accepted a
+// non-positive number of locks. RLockSet(0) as the only entry in a batch left
+// waitingOnShared set forever - the release loop never ran - permanently
+// breaking TryLock and TryRLock, and a negative number corrupted the release
+// accounting for the whole batch.
+func TestRLockSetValidation(t *testing.T) {
+	m := New()
+	defer m.Stop()
+
+	assertPanic(t, "RLockSet(0)", func() { m.RLockSet(0) })
+	assertPanic(t, "RLockSet(-1)", func() { m.RLockSet(-1) })
+}
+
+// TestRLockSetRecordsQueueExceeded - exposes the inconsistency where
+// RLockSet, unlike RLock, never recorded that the read queue had been
+// exceeded.
+func TestRLockSetRecordsQueueExceeded(t *testing.T) {
+	m := New(WithMaxReadQueueSize(5))
+	defer m.Stop()
+
+	// Lock the mutex so that read lock requests queue behind it
+	m.Lock()
+
+	wg := new(sync.WaitGroup)
+
+	for range 5 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			m.RLock()
+			defer m.RUnlock() //nolint:staticcheck
+		}()
+	}
+
+	// Delay to allow the requests above to fill the queue
+	<-time.After(time.Millisecond * 5)
+
+	if m.HasRQueueBeenExceeded() {
+		t.Fatal("HasRQueueBeenExceeded is true with the read queue full but not exceeded")
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		m.RLockSet(2)
+		defer func() {
+			m.RUnlock()
+			m.RUnlock()
+		}()
+	}()
+
+	// Delay to allow the request above to be executed
+	<-time.After(time.Millisecond * 5)
+
+	if !m.HasRQueueBeenExceeded() {
+		t.Fatal("HasRQueueBeenExceeded is false after RLockSet with the read queue exceeded")
+	}
+
+	// Release the lock to allow the read locks to be granted
+	m.Unlock()
+
+	wg.Wait()
+}

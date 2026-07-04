@@ -625,15 +625,29 @@ func (r *rlocker) Unlock() { (*RWMutex)(r).RUnlock() }
 // It should not be used for recursive read locking; a blocked Lock call
 // excludes new readers from acquiring the lock. See the documentation on the
 // RWMutex type (https://pkg.go.dev/sync#RWMutex).
+//
+// It is a run-time error if number is less than one.
 func (m *RWMutex) RLockSet(number int) {
 	if !m.initialised.Load() {
 		panic("attempt to use fair-mutex uninitialised")
+	}
+
+	// A non-positive number would corrupt the release accounting for the
+	// whole batch: a zero-lock batch leaves the processor's shared-lock state
+	// set forever, and a negative number ends the batch's release wait early.
+	if number < 1 {
+		panic("fair-mutex: RLockSet requires a positive number of locks")
 	}
 
 	start := time.Now()
 
 	r := make(chan struct{})
 	defer close(r)
+
+	// Record if the queue has exceeded capacity (or is likely to exceed capacity).
+	if !m.hasRQueueBeenExceeded.Load() && len(m.sharedQueue) == m.config.sharedMaxQueueSize {
+		m.hasRQueueBeenExceeded.Store(true)
+	}
 
 	request := &lockRequest{c: r, n: number}
 

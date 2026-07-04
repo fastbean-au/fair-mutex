@@ -1100,10 +1100,10 @@ func TestQueueExceededFlagsAreRaceFree(t *testing.T) {
 			for range 200 {
 				if exclusive {
 					m.Lock()
-					m.Unlock()
+					m.Unlock() //nolint:staticcheck
 				} else {
 					m.RLock()
-					m.RUnlock()
+					m.RUnlock() //nolint:staticcheck
 				}
 
 				_ = m.HasQueueBeenExceeded()

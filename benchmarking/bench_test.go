@@ -241,7 +241,7 @@ func benchmarkUncontendedLock(b *testing.B, newLock func() (rwLocker, func())) {
 
 	for n := 0; n < b.N; n++ {
 		m.Lock()
-		m.Unlock()
+		m.Unlock() //nolint:staticcheck
 	}
 }
 
@@ -253,7 +253,7 @@ func benchmarkUncontendedRLock(b *testing.B, newLock func() (rwLocker, func())) 
 
 	for n := 0; n < b.N; n++ {
 		m.RLock()
-		m.RUnlock()
+		m.RUnlock() //nolint:staticcheck
 	}
 }
 

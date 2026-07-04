@@ -1,441 +1,319 @@
 package benchmarking
 
 /*
-   This benchmark suite compares multiple implementations of read-write locks
-   (including sync.RWMutex and fairmutex.RWMutex) under controlled conditions.
-   It dynamically adapts to any type with Lock, Unlock, RLock, and RUnlock methods.
+   This benchmark suite compares sync.RWMutex and fairmutex.RWMutex.
 
-   Features:
-   - Automatically benchmarks all configured lock constructors.
-   - Enforces a per-benchmark timeout (60s) internally.
-   - Excludes workload time from benchmark measurements.
-   - Includes tests for both write and read locks under mixed loads.
+   Methodology:
+
+   - Implementations are called through a typed interface (no reflection), so
+     the per-operation adapter cost is a single virtual dispatch for both.
+   - All access to the shared data is inside the appropriate critical section:
+     readers sum a fixed window of the data under RLock, and writers fill the
+     same window under Lock. The data does not grow, so the workload is
+     stationary and runs are comparable.
+   - Latency benchmarks use a single measured goroutine so that ns/op is the
+     cost of one lock cycle. Each operation is individually timed, and the
+     p50/p99/max latencies are reported as extra metrics; a fair mutex's value
+     shows in the tail, which a mean alone hides. Per-operation timing adds
+     ~50ns of sampling overhead to each op.
+   - Background load goroutines are created and torn down per sub-benchmark,
+     with a fresh mutex per sub-benchmark, so there is no cross-contamination
+     between sub-benchmarks and no shared timeout to expire mid-run.
+
+   Benchmark families:
+
+   - Uncontended/Lock, Uncontended/RLock: the raw cost of a lock cycle with no
+     contention. This is where sync.RWMutex is strongest.
+   - SaturatedReadThroughput: per-read cost with all processors reading
+     concurrently and no writers. Also sync.RWMutex home turf.
+   - WriteLatency_SaturatedReads/Writers=N: the latency of a write lock while
+     100 spinning readers saturate the mutex, with N-1 additional contending
+     writers. This is the scenario fair-mutex is designed for.
+   - ReadLatency_ContendingWrites/Readers=N: the latency of a read lock while
+     4 writers continuously contend, with N-1 additional readers.
 */
 
 import (
-	"context"
 	"fmt"
-	"math/rand/v2"
-	"reflect"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	fairmutex "github.com/fastbean-au/fair-mutex"
 )
 
-// --------------------------------------
-// Reflection-based lock helpers
-// --------------------------------------
+const (
+	// The size of the shared data slice.
+	dataSize = 1024
 
-type lockAdapter struct{ v reflect.Value }
+	// The number of elements read or written within a critical section.
+	workWindow = 64
 
-func newLockAdapter(x any) *lockAdapter { return &lockAdapter{v: reflect.ValueOf(x)} }
+	// The number of spinning readers used to saturate the mutex in the
+	// write-latency benchmarks.
+	saturatingReaders = 100
 
-func (l *lockAdapter) call(method string) {
-	m := l.v.MethodByName(method)
-	if !m.IsValid() {
-		panic(fmt.Sprintf("missing method %q on %T", method, l.v.Interface()))
-	}
-	m.Call(nil)
+	// The number of continuously contending writers in the read-latency
+	// benchmarks.
+	contendingWriters = 4
+)
+
+// benchSink accumulates results of the read work so that the compiler cannot
+// eliminate the critical sections.
+var benchSink atomic.Int64
+
+type rwLocker interface {
+	Lock()
+	Unlock()
+	RLock()
+	RUnlock()
 }
 
-func (l *lockAdapter) Lock()   { l.call("Lock") }
-func (l *lockAdapter) Unlock() { l.call("Unlock") }
-func (l *lockAdapter) RLock()  { l.call("RLock") }
-func (l *lockAdapter) RUnlock() { l.call("RUnlock") }
+// The second return value is a cleanup function, called when the benchmark is
+// finished with the mutex.
+var lockImplementations = []struct {
+	name    string
+	newLock func() (rwLocker, func())
+}{
+	{
+		name: "sync.RWMutex",
+		newLock: func() (rwLocker, func()) {
+			return &sync.RWMutex{}, func() {}
+		},
+	},
+	{
+		name: "fairmutex",
+		newLock: func() (rwLocker, func()) {
+			m := fairmutex.New()
 
-// --------------------------------------
-// Benchmark timeout wrapper
-// --------------------------------------
+			return m, m.Stop
+		},
+	},
+}
 
-func runWithTimeout(b *testing.B, d time.Duration, fn func(ctx context.Context)) {
-	ctx, cancel := context.WithTimeout(context.Background(), d)
-	defer cancel()
-	done := make(chan struct{})
-	go func() {
-		fn(ctx)
-		close(done)
-	}()
-	select {
-	case <-done:
+// readWork - the critical section for readers: sum a fixed window of the
+// shared data. Must be called with the read lock held.
+func readWork(data []int) int {
+	total := 0
+
+	for i := 0; i < workWindow; i++ {
+		total += data[i]
+	}
+
+	return total
+}
+
+// writeWork - the critical section for writers: fill a fixed window of the
+// shared data. Must be called with the write lock held.
+func writeWork(data []int, value int) {
+	for i := 0; i < workWindow; i++ {
+		data[i] = value + i
+	}
+}
+
+// reportLatencyPercentiles - reports the p50, p99, and maximum of the sampled
+// per-operation latencies as extra benchmark metrics.
+func reportLatencyPercentiles(b *testing.B, latencies []time.Duration) {
+	if len(latencies) == 0 {
 		return
-	case <-ctx.Done():
-		b.Fatalf("benchmark exceeded timeout (%v)", d)
 	}
+
+	slices.Sort(latencies)
+
+	p50 := latencies[len(latencies)/2]
+	p99 := latencies[min(len(latencies)-1, len(latencies)*99/100)]
+	worst := latencies[len(latencies)-1]
+
+	b.ReportMetric(float64(p50.Nanoseconds()), "p50-ns")
+	b.ReportMetric(float64(p99.Nanoseconds()), "p99-ns")
+	b.ReportMetric(float64(worst.Nanoseconds()), "max-ns")
 }
 
-// --------------------------------------
-// Benchmark helpers (write-focused)
-// --------------------------------------
+type latencyConfig struct {
+	backgroundReaders int
+	backgroundWriters int
 
-func benchmarkReadLock(b *testing.B, newLock func() any) {
-	runWithTimeout(b, 60*time.Second, func(ctx context.Context) {
-		m := newLockAdapter(newLock())
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				m.RLock()
-				m.RUnlock()
-			}
-		}
-	})
+	// When true the measured goroutine takes write locks; otherwise it takes
+	// read locks.
+	measureWrites bool
 }
 
-func benchmarkWriteLock(b *testing.B, newLock func() any) {
-	runWithTimeout(b, 60*time.Second, func(ctx context.Context) {
-		m := newLockAdapter(newLock())
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				m.Lock()
-				m.Unlock()
-			}
-		}
-	})
-}
+// runLatencyBenchmark - measures the latency of lock cycles taken by a single
+// goroutine while background readers and writers contend for the same mutex.
+// The critical section work is inside the lock and included in the timing.
+func runLatencyBenchmark(b *testing.B, newLock func() (rwLocker, func()), cfg latencyConfig) {
+	m, cleanup := newLock()
+	defer cleanup()
 
-func benchmarkWriteUnderReadPressure(b *testing.B, newLock func() any) {
-	runWithTimeout(b, 60*time.Second, func(ctx context.Context) {
-		m := newLockAdapter(newLock())
+	data := make([]int, dataSize)
 
-		// background readers
+	stop := make(chan struct{})
+
+	wg := new(sync.WaitGroup)
+
+	for range cfg.backgroundReaders {
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
+
+			total := 0
+
 			for {
 				select {
-				case <-ctx.Done():
+
+				case <-stop:
+					benchSink.Add(int64(total))
+
 					return
+
 				default:
 					m.RLock()
-					time.Sleep(time.Millisecond)
+					total += readWork(data)
 					m.RUnlock()
+
 				}
 			}
 		}()
+	}
 
-		time.Sleep(10 * time.Millisecond)
-
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				m.Lock()
-				m.Unlock()
-			}
-		}
-	})
-}
-
-func benchmarkWriteUnderReadAndWriteLoad(b *testing.B, newLock func() any) {
-	runWithTimeout(b, 60*time.Second, func(ctx context.Context) {
-		m := newLockAdapter(newLock())
-
-		// background readers
-		for i := 0; i < 5; i++ {
-			time.Sleep(time.Microsecond * time.Duration(i))
-			go func() {
-				for {
-					select {
-					case <-ctx.Done():
-						return
-					default:
-						m.RLock()
-						time.Sleep(time.Millisecond)
-						m.RUnlock()
-					}
-				}
-			}()
-		}
-
-		time.Sleep(10 * time.Millisecond)
-
-		for i := 0; i < 10; i++ {
-			b.Run(fmt.Sprintf("Writers=%d", i+1), func(b *testing.B) {
-				b.ResetTimer()
-				for n := 0; n < b.N; n++ {
-					select {
-					case <-ctx.Done():
-						return
-					default:
-					}
-					wg := sync.WaitGroup{}
-					wg.Add(i + 1)
-					for w := 0; w < i+1; w++ {
-						go func() {
-							defer wg.Done()
-							m.Lock()
-							m.Unlock() //nolint:staticcheck
-						}()
-					}
-					wg.Wait()
-				}
-			})
-		}
-	})
-}
-
-func benchmarkWriteUnderReadAndWriteLoad_WithWork(b *testing.B, newLock func() any, work func(data *[]int)) {
-	runWithTimeout(b, 60*time.Second, func(ctx context.Context) {
-		m := newLockAdapter(newLock())
-		data := make([]int, 0)
-
-		// background readers
-		for i := 0; i < 1000; i++ {
-			time.Sleep(time.Microsecond * time.Duration(i))
-			go func() {
-				for {
-					select {
-					case <-ctx.Done():
-						return
-					default:
-						m.RLock()
-						_ = len(data)
-						m.RUnlock()
-					}
-				}
-			}()
-		}
-
-		time.Sleep(time.Millisecond)
-
-		for i := 0; i < 10; i++ {
-			b.Run(fmt.Sprintf("Writers=%d", i+1), func(b *testing.B) {
-				for n := 0; n < b.N; n++ {
-					select {
-					case <-ctx.Done():
-						return
-					default:
-					}
-					wg := sync.WaitGroup{}
-					wg.Add(i + 1)
-					for w := 0; w < i+1; w++ {
-						go func() {
-							defer wg.Done()
-							b.StopTimer()
-							work(&data)
-							b.StartTimer()
-							m.Lock()
-							m.Unlock() //nolint:staticcheck
-						}()
-					}
-					wg.Wait()
-				}
-			})
-		}
-	})
-}
-
-// --------------------------------------
-// NEW: Read benchmarks under write load
-// --------------------------------------
-
-// Read locks while writers are running
-func benchmarkReadUnderWritePressure(b *testing.B, newLock func() any) {
-	runWithTimeout(b, 60*time.Second, func(ctx context.Context) {
-		m := newLockAdapter(newLock())
-
-		// background writers
+	for w := range cfg.backgroundWriters {
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
+
 			for {
 				select {
-				case <-ctx.Done():
+
+				case <-stop:
 					return
+
 				default:
 					m.Lock()
-					time.Sleep(time.Millisecond)
+					writeWork(data, w)
 					m.Unlock()
+
 				}
 			}
 		}()
+	}
 
-		time.Sleep(10 * time.Millisecond)
+	// Allow the background load to establish before measuring
+	time.Sleep(10 * time.Millisecond)
 
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				m.RLock()
-				m.RUnlock()
-			}
+	latencies := make([]time.Duration, 0, b.N)
+	total := 0
+
+	b.ResetTimer()
+
+	for n := 0; n < b.N; n++ {
+		start := time.Now()
+
+		if cfg.measureWrites {
+			m.Lock()
+			writeWork(data, n)
+			m.Unlock()
+		} else {
+			m.RLock()
+			total += readWork(data)
+			m.RUnlock()
 		}
-	})
+
+		latencies = append(latencies, time.Since(start))
+	}
+
+	b.StopTimer()
+
+	benchSink.Add(int64(total))
+
+	close(stop)
+	wg.Wait()
+
+	reportLatencyPercentiles(b, latencies)
 }
 
-// Read locks under concurrent write and read load
-func benchmarkReadUnderReadAndWriteLoad(b *testing.B, newLock func() any) {
-	runWithTimeout(b, 60*time.Second, func(ctx context.Context) {
-		m := newLockAdapter(newLock())
+func benchmarkUncontendedLock(b *testing.B, newLock func() (rwLocker, func())) {
+	m, cleanup := newLock()
+	defer cleanup()
 
-		// background writers
-		for i := 0; i < 5; i++ {
-			time.Sleep(time.Microsecond * time.Duration(i))
-			go func() {
-				for {
-					select {
-					case <-ctx.Done():
-						return
-					default:
-						m.Lock()
-						time.Sleep(time.Millisecond)
-						m.Unlock()
-					}
-				}
-			}()
-		}
+	b.ResetTimer()
 
-		time.Sleep(10 * time.Millisecond)
-
-		for i := 0; i < 10; i++ {
-			b.Run(fmt.Sprintf("Readers=%d", i+1), func(b *testing.B) {
-				b.ResetTimer()
-				for n := 0; n < b.N; n++ {
-					select {
-					case <-ctx.Done():
-						return
-					default:
-					}
-					wg := sync.WaitGroup{}
-					wg.Add(i + 1)
-					for r := 0; r < i+1; r++ {
-						go func() {
-							defer wg.Done()
-							m.RLock()
-							m.RUnlock() //nolint:staticcheck
-						}()
-					}
-					wg.Wait()
-				}
-			})
-		}
-	})
+	for n := 0; n < b.N; n++ {
+		m.Lock()
+		m.Unlock()
+	}
 }
 
-// Read locks under concurrent writers performing small work
-func benchmarkReadUnderReadAndWriteLoad_WithWork(b *testing.B, newLock func() any, work func(data *[]int)) {
-	runWithTimeout(b, 60*time.Second, func(ctx context.Context) {
-		m := newLockAdapter(newLock())
-		data := make([]int, 0)
+func benchmarkUncontendedRLock(b *testing.B, newLock func() (rwLocker, func())) {
+	m, cleanup := newLock()
+	defer cleanup()
 
-		// background writers
-		for i := 0; i < 100; i++ {
-			time.Sleep(time.Microsecond * time.Duration(i))
-			go func() {
-				for {
-					select {
-					case <-ctx.Done():
-						return
-					default:
-						b.StopTimer()
-						work(&data)
-						b.StartTimer()
-						m.Lock()
-						m.Unlock()
-					}
-				}
-			}()
-		}
+	b.ResetTimer()
 
-		time.Sleep(time.Millisecond)
-
-		for i := 0; i < 10; i++ {
-			b.Run(fmt.Sprintf("Readers=%d", i+1), func(b *testing.B) {
-				for n := 0; n < b.N; n++ {
-					select {
-					case <-ctx.Done():
-						return
-					default:
-					}
-					wg := sync.WaitGroup{}
-					wg.Add(i + 1)
-					for r := 0; r < i+1; r++ {
-						go func() {
-							defer wg.Done()
-							m.RLock()
-							m.RUnlock() //nolint:staticcheck
-						}()
-					}
-					wg.Wait()
-				}
-			})
-		}
-	})
+	for n := 0; n < b.N; n++ {
+		m.RLock()
+		m.RUnlock()
+	}
 }
 
-// --------------------------------------
-// Benchmark registry and entry point
-// --------------------------------------
+// benchmarkSaturatedReadThroughput - the per-read cost with every processor
+// reading concurrently and no writers present.
+func benchmarkSaturatedReadThroughput(b *testing.B, newLock func() (rwLocker, func())) {
+	m, cleanup := newLock()
+	defer cleanup()
 
-var lockConstructors = map[string]func() any{
-	"sync.RWMutex": func() any { return &sync.RWMutex{} },
-	"fairmutex":    func() any { return fairmutex.New() },
+	data := make([]int, dataSize)
+
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		total := 0
+
+		for pb.Next() {
+			m.RLock()
+			total += readWork(data)
+			m.RUnlock()
+		}
+
+		benchSink.Add(int64(total))
+	})
 }
 
 func BenchmarkLocks(b *testing.B) {
-	for name, factory := range lockConstructors {
-		b.Run(name, func(b *testing.B) {
-			// Write lock benchmarks
-			b.Run("WriteLock", func(b *testing.B) {
-				benchmarkWriteLock(b, factory)
-			})
-			b.Run("Write_UnderReadPressure", func(b *testing.B) {
-				benchmarkWriteUnderReadPressure(b, factory)
-			})
-			b.Run("Write_UnderReadAndWriteLoad", func(b *testing.B) {
-				benchmarkWriteUnderReadAndWriteLoad(b, factory)
-			})
-			b.Run("Write_UnderReadAndWriteLoad_TrivialWork", func(b *testing.B) {
-				work := func(data *[]int) {
-					*data = append(*data, rand.IntN(1000000))
-				}
-				benchmarkWriteUnderReadAndWriteLoad_WithWork(b, factory, work)
-			})
-			b.Run("Write_UnderReadAndWriteLoad_ModestWork", func(b *testing.B) {
-				work := func(data *[]int) {
-					n := rand.IntN(1000000)
-					for _, v := range *data {
-						n += v
-					}
-					*data = append(*data, n)
-				}
-				benchmarkWriteUnderReadAndWriteLoad_WithWork(b, factory, work)
+	for _, impl := range lockImplementations {
+		b.Run(impl.name, func(b *testing.B) {
+			b.Run("Uncontended/Lock", func(b *testing.B) {
+				benchmarkUncontendedLock(b, impl.newLock)
 			})
 
-			// Read lock benchmarks
-			b.Run("ReadLock", func(b *testing.B) {
-				benchmarkReadLock(b, factory)
+			b.Run("Uncontended/RLock", func(b *testing.B) {
+				benchmarkUncontendedRLock(b, impl.newLock)
 			})
-			b.Run("Read_UnderWritePressure", func(b *testing.B) {
-				benchmarkReadUnderWritePressure(b, factory)
+
+			b.Run("SaturatedReadThroughput", func(b *testing.B) {
+				benchmarkSaturatedReadThroughput(b, impl.newLock)
 			})
-			b.Run("Read_UnderReadAndWriteLoad", func(b *testing.B) {
-				benchmarkReadUnderReadAndWriteLoad(b, factory)
-			})
-			b.Run("Read_UnderReadAndWriteLoad_TrivialWork", func(b *testing.B) {
-				work := func(data *[]int) {
-					*data = append(*data, rand.IntN(1000000))
-				}
-				benchmarkReadUnderReadAndWriteLoad_WithWork(b, factory, work)
-			})
-			b.Run("Read_UnderReadAndWriteLoad_ModestWork", func(b *testing.B) {
-				work := func(data *[]int) {
-					n := rand.IntN(1000000)
-					for _, v := range *data {
-						n += v
-					}
-					*data = append(*data, n)
-				}
-				benchmarkReadUnderReadAndWriteLoad_WithWork(b, factory, work)
-			})
+
+			for i := 1; i <= 10; i++ {
+				b.Run(fmt.Sprintf("WriteLatency_SaturatedReads/Writers=%d", i), func(b *testing.B) {
+					runLatencyBenchmark(b, impl.newLock, latencyConfig{
+						backgroundReaders: saturatingReaders,
+						backgroundWriters: i - 1,
+						measureWrites:     true,
+					})
+				})
+			}
+
+			for i := 1; i <= 10; i++ {
+				b.Run(fmt.Sprintf("ReadLatency_ContendingWrites/Readers=%d", i), func(b *testing.B) {
+					runLatencyBenchmark(b, impl.newLock, latencyConfig{
+						backgroundReaders: i - 1,
+						backgroundWriters: contendingWriters,
+						measureWrites:     false,
+					})
+				})
+			}
 		})
 	}
 }

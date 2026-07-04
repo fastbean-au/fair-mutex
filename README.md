@@ -306,134 +306,138 @@ Defaults to "go.mutex.wait.seconds".
   <img src="assets/combined_benchmarks.png" alt="Combined Benchmarks" width="600"/>
 </div>
 
-### Overview
+### Methodology
 
-The following benchmarks compare the performance of `sync.RWMutex` and `fairmutex` under read and write contention with **Trivial** and **Modest** work per operation. All benchmarks were run with varying numbers of concurrent readers or writers (1–10) on an 8-core system.
+The benchmarks compare `sync.RWMutex` and `fairmutex` through a typed interface (a single
+virtual dispatch per operation for both implementations). Every critical section does real,
+fixed-size work *inside* the lock: readers sum a 64-element window of a shared slice, and
+writers fill the same window. The shared data does not grow, so the workload is stationary and
+runs are comparable.
 
-The tables and graphs below can be regenerated with [`benchmarking/genreport.py`](benchmarking/genreport.py) (requires matplotlib):
+The latency benchmarks use a single measured goroutine so that ns/op is the cost of one lock
+cycle. Every operation is individually timed, and the p50/p99/max latencies are reported
+alongside the mean — a fair mutex's value shows in the tail, which a mean alone hides. All
+results below are from an Apple M1 (8 cores).
+
+The tables and graphs can be regenerated with [`benchmarking/genreport.py`](benchmarking/genreport.py) (requires matplotlib):
 
 ```bash
-go test -bench 'Locks/.*/UnderReadAndWriteLoad_(TrivialWork|ModestWork)$' -run '^$' ./benchmarking/ > bench.out
+go test -bench . -run '^$' ./benchmarking/ > bench.out
 python3 benchmarking/genreport.py   # writes assets/*.png and tables.md
 ```
 
-Metrics shown:
+---
 
-- **Iterations** (higher = more stable result)
-- **ns/op** = average nanoseconds per operation (lower is better)
+#### Uncontended
+
+| Operation | sync.RWMutex (ns/op) | fairmutex (ns/op) |
+|-----------|----------------------|-------------------|
+| Lock | 19 | 799 |
+| RLock | 14 | 804 |
+
+The raw cost of a lock cycle with no contention. This is `sync.RWMutex` at its best: `fairmutex`
+pays for its processor round-trip on every operation, a ~40–60x premium.
 
 ---
 
-#### Trivial Readers
+#### Saturated read throughput
 
-| Readers | sync.RWMutex (ns/op) | sync.RWMutex (iters) | fairmutex (ns/op) | fairmutex (iters) |
-|---------|----------------------|----------------------|-------------------|-------------------|
-| 1 | 77,060 | 18,260 | 1,356,570 | 892 |
-| 2 | 180,529 | 6,060 | 1,650,158 | 766 |
-| 3 | 385,296 | 2,916 | 1,878,830 | 699 |
-| 4 | 372,170 | 3,466 | 2,095,633 | 512 |
-| 5 | 490,394 | 4,627 | 2,348,436 | 517 |
-| 6 | 600,076 | 1,684 | 2,452,600 | 556 |
-| 7 | 707,889 | 1,845 | 2,584,325 | 445 |
-| 8 | 712,600 | 1,474 | 3,009,676 | 466 |
-| 9 | 924,449 | 2,326 | 2,967,786 | 417 |
-| 10 | 1,042,754 | 1,230 | 3,139,224 | 382 |
+| | sync.RWMutex (ns/read) | fairmutex (ns/read) |
+|-|------------------------|---------------------|
+| All processors reading | 92 | 686 |
 
-<div align="center">
-  <img src="assets/trivial_readers_benchmark.png" alt="Trivial Readers Benchmark" width="300"/>
-</div>
+Per-read cost with every processor reading concurrently and no writers present — read-dominant
+workloads are `sync.RWMutex` home turf, by ~7.5x.
 
 ---
 
-#### Modest Readers
+#### Write lock latency under saturated reads
 
-| Readers | sync.RWMutex (ns/op) | sync.RWMutex (iters) | fairmutex (ns/op) | fairmutex (iters) |
-|---------|----------------------|----------------------|-------------------|-------------------|
-| 1 | 55,667 | 18,386 | 1,581,790 | 903 |
-| 2 | 138,726 | 8,911 | 1,265,796 | 908 |
-| 3 | 199,949 | 5,846 | 1,797,424 | 723 |
-| 4 | 224,235 | 4,806 | 1,945,951 | 657 |
-| 5 | 140,062 | 8,810 | 1,993,500 | 628 |
-| 6 | 175,165 | 8,455 | 2,067,703 | 595 |
-| 7 | 120,316 | 9,614 | 2,134,920 | 537 |
-| 8 | 170,727 | 6,745 | 2,274,746 | 714 |
-| 9 | 165,430 | 10,000 | 2,356,042 | 511 |
-| 10 | 148,980 | 10,000 | 2,414,398 | 494 |
+The latency of a write lock while 100 spinning readers saturate the mutex, with 0–9 additional
+contending writers.
+
+| Writers | sync.RWMutex mean (ns) | sync.RWMutex p99 (ns) | fairmutex mean (ns) | fairmutex p99 (ns) |
+|---------|------------------------|-----------------------|---------------------|--------------------|
+| 1 | 39,663 | 204,583 | 56,603 | 128,042 |
+| 2 | 81,827 | 1,185,333 | 57,349 | 123,708 |
+| 3 | 118,901 | 1,328,209 | 52,310 | 125,791 |
+| 4 | 154,754 | 1,378,833 | 58,497 | 122,625 |
+| 5 | 181,038 | 1,435,375 | 57,673 | 172,125 |
+| 6 | 255,674 | 1,668,375 | 60,136 | 127,292 |
+| 7 | 290,710 | 1,629,708 | 53,624 | 122,583 |
+| 8 | 626,249 | 10,795,458 | 56,026 | 138,666 |
+| 9 | 941,922 | 11,649,709 | 54,565 | 118,792 |
+| 10 | 783,182 | 10,981,833 | 61,973 | 126,583 |
 
 <div align="center">
-  <img src="assets/modest_readers_benchmark.png" alt="Modest Readers Benchmark" width="300"/>
+  <img src="assets/write_latency_benchmark.png" alt="Write Latency Benchmark" width="600"/>
 </div>
+
+This is the scenario `fair-mutex` is designed for. Its mean stays flat at ~55µs and its p99 at
+~125µs *regardless of writer count*. `sync.RWMutex` degrades as writers are added: by 8–10
+writers its mean is ~0.6–0.9ms, its p99 is ~11ms, and worst-case waits of over 140ms were
+observed.
 
 ---
 
-#### Trivial Writers
+#### Read lock latency under contending writes
 
-| Writers | sync.RWMutex (ns/op) | sync.RWMutex (iters) | fairmutex (ns/op) | fairmutex (iters) |
-|---------|----------------------|----------------------|-------------------|-------------------|
-| 1 | 11,144,973 | 100 | 193,662 | 6,057 |
-| 2 | 5,844,347 | 188 | 234,962 | 5,750 |
-| 3 | 5,623,971 | 229 | 325,049 | 3,688 |
-| 4 | 5,486,612 | 214 | 333,700 | 3,836 |
-| 5 | 7,580,627 | 188 | 341,747 | 3,746 |
-| 6 | 8,440,267 | 150 | 340,918 | 3,544 |
-| 7 | 10,380,412 | 100 | 342,859 | 3,175 |
-| 8 | 10,639,926 | 100 | 353,143 | 3,321 |
-| 9 | 10,945,730 | 100 | 362,281 | 3,674 |
-| 10 | 15,736,136 | 100 | 366,223 | 3,769 |
+The latency of a read lock while 4 writers continuously contend, with 0–9 additional readers.
 
-<div align="center">
-  <img src="assets/trivial_writers_benchmark.png" alt="Trivial Writers Benchmark" width="300"/>
-</div>
-
----
-
-#### Modest Writers
-
-| Writers | sync.RWMutex (ns/op) | sync.RWMutex (iters) | fairmutex (ns/op) | fairmutex (iters) |
-|---------|----------------------|----------------------|-------------------|-------------------|
-| 1 | 13,712,706 | 100 | 196,527 | 6,100 |
-| 2 | 5,705,721 | 226 | 228,223 | 5,208 |
-| 3 | 5,562,815 | 228 | 307,142 | 3,766 |
-| 4 | 5,308,055 | 195 | 328,195 | 3,837 |
-| 5 | 6,821,824 | 183 | 325,595 | 3,603 |
-| 6 | 8,109,875 | 142 | 317,667 | 3,682 |
-| 7 | 9,352,677 | 140 | 308,612 | 3,280 |
-| 8 | 10,977,572 | 129 | 310,907 | 3,698 |
-| 9 | 10,606,404 | 110 | 317,591 | 4,417 |
-| 10 | 13,065,980 | 86 | 334,664 | 4,144 |
+| Readers | sync.RWMutex mean (ns) | sync.RWMutex p99 (ns) | fairmutex mean (ns) | fairmutex p99 (ns) |
+|---------|------------------------|-----------------------|---------------------|--------------------|
+| 1 | 567 | 2,625 | 3,324 | 9,000 |
+| 2 | 740 | 7,750 | 4,178 | 10,625 |
+| 3 | 688 | 9,792 | 4,915 | 11,875 |
+| 4 | 854 | 14,250 | 5,634 | 14,166 |
+| 5 | 1,002 | 18,583 | 6,134 | 13,958 |
+| 6 | 1,148 | 22,791 | 6,826 | 15,125 |
+| 7 | 1,280 | 25,000 | 7,484 | 15,958 |
+| 8 | 1,471 | 28,042 | 8,141 | 16,792 |
+| 9 | 1,596 | 31,584 | 8,411 | 16,458 |
+| 10 | 1,707 | 35,916 | 12,200 | 56,542 |
 
 <div align="center">
-  <img src="assets/modest_writers_benchmark.png" alt="Modest Writers Benchmark" width="300"/>
+  <img src="assets/read_latency_benchmark.png" alt="Read Latency Benchmark" width="600"/>
 </div>
+
+`sync.RWMutex` has the better mean throughout (~0.6–1.7µs vs ~3–12µs). The tail is more even:
+from about 5 concurrent readers, `fairmutex`'s p99 is lower than `sync.RWMutex`'s — batching
+smooths the reader tail under write pressure too.
 
 ---
 
 ## Key Observations
 
-### Readers
+### Where `sync.RWMutex` wins
 
-- **`sync.RWMutex` dominates** in both Trivial and Modest read-heavy workloads.
-- `fairmutex` is **~3–28x slower** under read contention due to fairness overhead.
-- As reader count increases, `sync.RWMutex` scales better; `fairmutex` latency grows slowly with reader count but remains high.
+- **Uncontended locks**: ~19ns vs ~800ns — roughly a 40x premium for fairness.
+- **Read throughput**: ~7.5x more reads per second under full read parallelism.
+- **Mean read latency** under write contention.
 
-### Writers
+### Where `fairmutex` wins
 
-- **`fairmutex` wins decisively** in write-heavy scenarios — **~16–70x faster** than `sync.RWMutex`.
-- `sync.RWMutex` suffers from writer starvation and lock contention; performance degrades sharply.
-- `fairmutex` maintains **consistent ~200–370k ns/op** even at high writer counts.
+- **Write latency under read saturation** — the headline: mean and p99 are flat as contention
+  grows, where `sync.RWMutex`'s p99 reaches ~11ms and its worst case ~140ms. At 9 contending
+  writers, `fairmutex`'s p99 is ~90x lower.
+- **Predictability**: latencies barely move as contention increases; there is no starvation
+  cliff.
+- **Read tail latency** under sustained write contention (from ~5 concurrent readers).
 
 ### Trade-off Summary
 
-| Scenario                  | Winner          | Reason |
-|---------------------------|-----------------|--------|
-| Read-heavy (Trivial/Modest) | `sync.RWMutex`  | Low overhead, excellent scalability |
-| Write-heavy (Trivial/Modest)| `fairmutex`     | Prevents starvation, consistent latency |
-| Mixed or fairness-critical | `fairmutex`     | Guarantees progress for all threads |
+| Scenario                                  | Winner          | Reason |
+|-------------------------------------------|-----------------|--------|
+| Uncontended or low contention             | `sync.RWMutex`  | ~40x lower per-operation cost |
+| Read-dominant workloads                   | `sync.RWMutex`  | ~7.5x higher read throughput |
+| Writers under heavy read demand           | `fairmutex`     | Flat ~55µs mean / ~125µs p99; no starvation cliff |
+| Tail-latency or fairness-critical mixed   | `fairmutex`     | Bounded, predictable waits for both lock types |
 
 ---
 
 **Conclusion**:
 
-Use **`sync.RWMutex`** for **read-dominant** workloads.
+Use **`sync.RWMutex`** for **read-dominant** workloads and wherever raw lock overhead matters.
 
-Use **`fairmutex`** for **write-heavy or fairness-sensitive** applications where preventing writer starvation is critical.
+Use **`fairmutex`** where **writers must make timely progress under persistent read demand**,
+or where **predictable tail latency** matters more than mean throughput.

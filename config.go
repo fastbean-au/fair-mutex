@@ -15,7 +15,7 @@ func getConfig(options ...Option) *config {
 	// Create config with defaults
 	cfg := &config{
 		sharedMaxQueueSize:    1024,
-		sharedMaxBatchSize:    1024,
+		sharedMaxBatchSize:    256,
 		exclusiveMaxBatchSize: 32,
 		exclusiveMaxQueueSize: 256,
 		metricName:            "go.mutex.wait.seconds",
@@ -64,9 +64,14 @@ type Option func(*config)
 // obtain a lock that are waiting, but the maximum number that will be processed
 // in one locking cycle.
 //
+// Under sustained heavy read demand, read batches fill to this limit, and a
+// queued write lock waits for the current read batch to complete before it can
+// be granted. Reduce this value to bound write lock latency in read-heavy
+// workloads; increase it to favour read throughput.
+//
 // This value cannot be larger than the MaxReadQueueSize.
 //
-// Defaults to the value of MaxReadQueueSize.
+// Defaults to 256.
 func WithMaxReadBatchSize(length int) Option {
 	return func(c *config) {
 		c.sharedMaxBatchSize = length

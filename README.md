@@ -262,9 +262,9 @@ This value cannot be larger than the MaxReadQueueSize.
 
 Minimum value of 1.
 
-Defaults to the value of MaxReadQueueSize.
+Defaults to 256.
 
-Under sustained heavy read demand, read batches will fill to this limit, and a queued write lock waits for the current read batch to complete. Reduce this value to bound write lock latency in read-heavy workloads.
+Under sustained heavy read demand, read batches will fill to this limit, and a queued write lock waits for the current read batch to complete. Reduce this value to bound write lock latency in read-heavy workloads, or increase it to favour read throughput.
 
 ### WithMaxReadQueueSize
 The maximum queue size for read (also known as shared) locks. The queue size does not determine the number of calls to obtain a lock that are waiting, but the number during which we can guarantee order. This setting will effect the memory required.
@@ -327,17 +327,17 @@ Metrics shown:
 #### Trivial Readers
 
 | Readers | sync.RWMutex (ns/op) | sync.RWMutex (iters) | fairmutex (ns/op) | fairmutex (iters) |
-|--------|----------------------|----------------------|-------------------|-------------------|
-| 1      | 80,681               | 15,368               | 1,326,412         | 902               |
-| 2      | 173,737              | 6,349                | 1,638,965         | 650               |
-| 3      | 307,849              | 5,222                | 2,046,788         | 597               |
-| 4      | 320,618              | 3,152                | 2,264,297         | 618               |
-| 5      | 282,254              | 7,017                | 2,326,412         | 470               |
-| 6      | 258,063              | 3,990                | 2,682,213         | 433               |
-| 7      | 517,804              | 6,145                | 2,847,024         | 432               |
-| 8      | 562,726              | 2,538                | 3,065,326         | 424               |
-| 9      | 834,467              | 1,794                | 3,323,761         | 361               |
-| 10     | 729,449              | 1,730                | 3,474,044         | 355               |
+|---------|----------------------|----------------------|-------------------|-------------------|
+| 1 | 77,060 | 18,260 | 1,356,570 | 892 |
+| 2 | 180,529 | 6,060 | 1,650,158 | 766 |
+| 3 | 385,296 | 2,916 | 1,878,830 | 699 |
+| 4 | 372,170 | 3,466 | 2,095,633 | 512 |
+| 5 | 490,394 | 4,627 | 2,348,436 | 517 |
+| 6 | 600,076 | 1,684 | 2,452,600 | 556 |
+| 7 | 707,889 | 1,845 | 2,584,325 | 445 |
+| 8 | 712,600 | 1,474 | 3,009,676 | 466 |
+| 9 | 924,449 | 2,326 | 2,967,786 | 417 |
+| 10 | 1,042,754 | 1,230 | 3,139,224 | 382 |
 
 <div align="center">
   <img src="assets/trivial_readers_benchmark.png" alt="Trivial Readers Benchmark" width="300"/>
@@ -348,17 +348,17 @@ Metrics shown:
 #### Modest Readers
 
 | Readers | sync.RWMutex (ns/op) | sync.RWMutex (iters) | fairmutex (ns/op) | fairmutex (iters) |
-|--------|----------------------|----------------------|-------------------|-------------------|
-| 1      | 36,202               | 31,581               | 1,556,433         | 898               |
-| 2      | 76,200               | 17,818               | 1,558,704         | 787               |
-| 3      | 72,892               | 16,692               | 1,631,036         | 750               |
-| 4      | 68,760               | 19,347               | 1,780,943         | 700               |
-| 5      | 68,872               | 16,430               | 1,887,717         | 650               |
-| 6      | 89,495               | 14,074               | 1,957,421         | 624               |
-| 7      | 88,607               | 13,586               | 2,027,727         | 604               |
-| 8      | 90,314               | 13,569               | 2,113,116         | 586               |
-| 9      | 95,897               | 13,828               | 2,246,043         | 553               |
-| 10     | 80,410               | 13,772               | 2,355,223         | 517               |
+|---------|----------------------|----------------------|-------------------|-------------------|
+| 1 | 55,667 | 18,386 | 1,581,790 | 903 |
+| 2 | 138,726 | 8,911 | 1,265,796 | 908 |
+| 3 | 199,949 | 5,846 | 1,797,424 | 723 |
+| 4 | 224,235 | 4,806 | 1,945,951 | 657 |
+| 5 | 140,062 | 8,810 | 1,993,500 | 628 |
+| 6 | 175,165 | 8,455 | 2,067,703 | 595 |
+| 7 | 120,316 | 9,614 | 2,134,920 | 537 |
+| 8 | 170,727 | 6,745 | 2,274,746 | 714 |
+| 9 | 165,430 | 10,000 | 2,356,042 | 511 |
+| 10 | 148,980 | 10,000 | 2,414,398 | 494 |
 
 <div align="center">
   <img src="assets/modest_readers_benchmark.png" alt="Modest Readers Benchmark" width="300"/>
@@ -370,16 +370,16 @@ Metrics shown:
 
 | Writers | sync.RWMutex (ns/op) | sync.RWMutex (iters) | fairmutex (ns/op) | fairmutex (iters) |
 |---------|----------------------|----------------------|-------------------|-------------------|
-| 1       | 12,833,860           | 126                  | 717,212           | 1,700             |
-| 2       | 6,452,517            | 244                  | 849,876           | 1,459             |
-| 3       | 5,058,818            | 207                  | 1,177,065         | 1,017             |
-| 4       | 5,718,175            | 198                  | 1,118,957         | 1,143             |
-| 5       | 7,596,646            | 172                  | 1,167,255         | 1,083             |
-| 6       | 8,700,033            | 198                  | 1,192,970         | 1,111             |
-| 7       | 8,660,803            | 120                  | 1,175,683         | 1,023             |
-| 8       | 10,135,521           | 127                  | 1,181,740         | 1,038             |
-| 9       | 10,584,308           | 100                  | 1,166,898         | 934               |
-| 10      | 12,715,514           | 100                  | 1,238,110         | 1,046             |
+| 1 | 11,144,973 | 100 | 193,662 | 6,057 |
+| 2 | 5,844,347 | 188 | 234,962 | 5,750 |
+| 3 | 5,623,971 | 229 | 325,049 | 3,688 |
+| 4 | 5,486,612 | 214 | 333,700 | 3,836 |
+| 5 | 7,580,627 | 188 | 341,747 | 3,746 |
+| 6 | 8,440,267 | 150 | 340,918 | 3,544 |
+| 7 | 10,380,412 | 100 | 342,859 | 3,175 |
+| 8 | 10,639,926 | 100 | 353,143 | 3,321 |
+| 9 | 10,945,730 | 100 | 362,281 | 3,674 |
+| 10 | 15,736,136 | 100 | 366,223 | 3,769 |
 
 <div align="center">
   <img src="assets/trivial_writers_benchmark.png" alt="Trivial Writers Benchmark" width="300"/>
@@ -391,16 +391,16 @@ Metrics shown:
 
 | Writers | sync.RWMutex (ns/op) | sync.RWMutex (iters) | fairmutex (ns/op) | fairmutex (iters) |
 |---------|----------------------|----------------------|-------------------|-------------------|
-| 1       | 13,390,985           | 100                  | 712,189           | 1,788             |
-| 2       | 7,616,898            | 198                  | 823,562           | 1,630             |
-| 3       | 5,931,968            | 177                  | 1,172,112         | 1,170             |
-| 4       | 6,314,357            | 188                  | 1,122,091         | 1,004             |
-| 5       | 6,898,060            | 177                  | 1,149,918         | 1,015             |
-| 6       | 7,425,944            | 139                  | 1,185,674         | 1,118             |
-| 7       | 8,615,956            | 120                  | 1,157,858         | 1,032             |
-| 8       | 11,299,541           | 100                  | 1,133,048         | 1,072             |
-| 9       | 10,205,442           | 100                  | 1,200,764         | 896               |
-| 10      | 11,416,488           | 100                  | 1,190,633         | 1,040             |
+| 1 | 13,712,706 | 100 | 196,527 | 6,100 |
+| 2 | 5,705,721 | 226 | 228,223 | 5,208 |
+| 3 | 5,562,815 | 228 | 307,142 | 3,766 |
+| 4 | 5,308,055 | 195 | 328,195 | 3,837 |
+| 5 | 6,821,824 | 183 | 325,595 | 3,603 |
+| 6 | 8,109,875 | 142 | 317,667 | 3,682 |
+| 7 | 9,352,677 | 140 | 308,612 | 3,280 |
+| 8 | 10,977,572 | 129 | 310,907 | 3,698 |
+| 9 | 10,606,404 | 110 | 317,591 | 4,417 |
+| 10 | 13,065,980 | 86 | 334,664 | 4,144 |
 
 <div align="center">
   <img src="assets/modest_writers_benchmark.png" alt="Modest Writers Benchmark" width="300"/>
@@ -413,14 +413,14 @@ Metrics shown:
 ### Readers
 
 - **`sync.RWMutex` dominates** in both Trivial and Modest read-heavy workloads.
-- `fairmutex` is **~5–40x slower** under read contention due to fairness overhead.
+- `fairmutex` is **~3–28x slower** under read contention due to fairness overhead.
 - As reader count increases, `sync.RWMutex` scales better; `fairmutex` latency grows slowly with reader count but remains high.
 
 ### Writers
 
-- **`fairmutex` wins decisively** in write-heavy scenarios — **~5–18x faster** than `sync.RWMutex`.
+- **`fairmutex` wins decisively** in write-heavy scenarios — **~16–70x faster** than `sync.RWMutex`.
 - `sync.RWMutex` suffers from writer starvation and lock contention; performance degrades sharply.
-- `fairmutex` maintains **consistent ~0.7–1.2M ns/op** even at high writer counts.
+- `fairmutex` maintains **consistent ~200–370k ns/op** even at high writer counts.
 
 ### Trade-off Summary
 

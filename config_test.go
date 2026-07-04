@@ -16,7 +16,7 @@ func TestMutexConfigDefaultsAndOverrides(t *testing.T) {
 			name:    "defaults",
 			options: []Option{},
 			expected: config{
-				sharedMaxBatchSize:    1024,
+				sharedMaxBatchSize:    256,
 				sharedMaxQueueSize:    1024,
 				exclusiveMaxBatchSize: 32,
 				exclusiveMaxQueueSize: 256,
@@ -121,7 +121,7 @@ func TestMutexConfigDefaultsAndOverrides(t *testing.T) {
 			name:    "metrics config",
 			options: []Option{WithMetricName("my.metric"), WithMetricAttributes(attribute.Int("my_attribute", 42))},
 			expected: config{
-				sharedMaxBatchSize:    1024,
+				sharedMaxBatchSize:    256,
 				sharedMaxQueueSize:    1024,
 				exclusiveMaxBatchSize: 32,
 				exclusiveMaxQueueSize: 256,

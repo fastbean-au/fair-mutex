@@ -1069,7 +1069,7 @@ func TestTryLocksDoNotBlock(t *testing.T) {
 		// Whichever type won, a single release of that type is correct; the
 		// winner reported true for exactly one of TryLock/TryRLock.
 		if granted == 1 {
-			if m.waitingOnExclusive.Load() {
+			if m.heldExclusive.Load() > 0 {
 				m.Unlock()
 			} else {
 				m.RUnlock()

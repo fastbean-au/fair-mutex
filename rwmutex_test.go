@@ -298,13 +298,18 @@ func TestFairMutexBasicOperations(t *testing.T) {
 
 		m.Lock()
 
-		go func() {
-			m.Lock()
-		}()
+		// Each queued request is either granted before the stop signal is
+		// processed, or woken into a panic by the drain in cleanup; either
+		// way the goroutines must finish rather than leak.
+		results := make(chan any, 2)
 
-		go func() {
-			m.Lock()
-		}()
+		for range 2 {
+			go func() {
+				defer func() { results <- recover() }()
+
+				m.Lock()
+			}()
+		}
 
 		// Allow time for the locks to be queued
 		<-time.After(time.Millisecond)
@@ -313,7 +318,20 @@ func TestFairMutexBasicOperations(t *testing.T) {
 
 		m.Stop()
 
-		<-time.After(time.Millisecond * 10)
+		timeout := time.After(5 * time.Second)
+
+	RESULT_LOOP:
+		for range 2 {
+			select {
+
+			case <-results:
+				continue RESULT_LOOP
+
+			case <-timeout:
+				t.Fatal("a queued lock request neither completed nor panicked after Stop")
+
+			}
+		}
 
 		// Expect panics for standard methods
 		assertPanic(t, "Lock", func() { m.Lock() })
@@ -1091,4 +1109,94 @@ func TestQueueExceededFlagsAreRaceFree(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+// TestStopIsIdempotentAndSynchronous - exposes two Stop() bugs: a second
+// concurrent Stop() could load initialised before cleanup stored false and
+// then block forever sending on stopProcessing, and Stop() could return
+// before cleanup had run, leaving the mutex briefly marked as initialised.
+func TestStopIsIdempotentAndSynchronous(t *testing.T) {
+	for range 200 {
+		m := New()
+
+		done := make(chan struct{})
+
+		for range 2 {
+			go func() {
+				defer func() { done <- struct{}{} }()
+
+				m.Stop()
+			}()
+		}
+
+		timeout := time.After(5 * time.Second)
+
+	WAIT_LOOP:
+		for range 2 {
+			select {
+
+			case <-done:
+				continue WAIT_LOOP
+
+			case <-timeout:
+				t.Fatal("a concurrent Stop call blocked forever")
+
+			}
+		}
+
+		if m.initialised.Load() {
+			t.Fatal("mutex still marked initialised after Stop returned")
+		}
+	}
+}
+
+// TestStopWakesPendingLockRequests - exposes the goroutine leak where a lock
+// request queued but not yet granted when Stop was called blocked forever
+// waiting for a grant that could never come. Such requests must instead be
+// woken into a panic.
+func TestStopWakesPendingLockRequests(t *testing.T) {
+	m := New()
+
+	// Hold the write lock for the life of the test so that the queued
+	// requests below can never be granted.
+	m.Lock()
+
+	pending := make(chan any, 2)
+
+	go func() {
+		defer func() { pending <- recover() }()
+
+		m.Lock()
+	}()
+
+	go func() {
+		defer func() { pending <- recover() }()
+
+		m.RLock()
+	}()
+
+	// Allow time for the lock requests to be queued
+	<-time.After(time.Millisecond * 10)
+
+	// Stop with the lock still held and the requests still queued
+	m.Stop()
+
+	timeout := time.After(5 * time.Second)
+
+WAIT_LOOP:
+	for range 2 {
+		select {
+
+		case p := <-pending:
+			if p == nil {
+				t.Error("expected a queued lock request to panic when Stop was called")
+			}
+
+			continue WAIT_LOOP
+
+		case <-timeout:
+			t.Fatal("a queued lock request was leaked by Stop")
+
+		}
+	}
 }

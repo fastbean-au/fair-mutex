@@ -77,6 +77,14 @@ type RWMutex struct {
 	// processing locks and exit.
 	stopProcessing chan struct{}
 
+	// True once Stop has been called. Ensures that only the first call to
+	// Stop sends the stop signal.
+	stopping atomic.Bool
+
+	// Closed by cleanup once shutdown is complete. Stop waits on this so that
+	// it does not return until the mutex is fully stopped.
+	stopped chan struct{}
+
 	// When true, we are waiting on exclusive locks to be released (exclusive
 	// locks are being held).
 	waitingOnExclusive atomic.Bool
@@ -97,6 +105,11 @@ type RWMutex struct {
 type lockRequest struct {
 	c chan struct{}
 	n int // The number of (shared) locks requested
+
+	// Set by cleanup before signalling c when the request was still queued at
+	// Stop time and can never be granted. The requester must panic rather
+	// than proceed as if it held the lock.
+	aborted bool
 }
 
 // New - returns a pointer to a new Mutex with the processing process already
@@ -128,6 +141,7 @@ func New(options ...Option) *RWMutex {
 		releaseExclusive: make(chan chan struct{}),
 		releaseShared:    make(chan chan struct{}, cfg.sharedMaxBatchSize),
 		stopProcessing:   make(chan struct{}),
+		stopped:          make(chan struct{}),
 		rLockSetAttrs:    attribute.NewSet(append(cfg.metricAttributes, attribute.String("operation", "RLockSet"))...),
 		rLockAttrs:       attribute.NewSet(append(cfg.metricAttributes, attribute.String("operation", "RLock"))...),
 		lockAttrs:        attribute.NewSet(append(cfg.metricAttributes, attribute.String("operation", "Lock"))...),
@@ -161,10 +175,26 @@ const (
 // Stop - causes the go func processing mutex requests to stop running and the
 // cleanup method to be called after that. Calling this function is required so
 // that resources are not leaked (e.g. zombie go processes).
+//
+// Stop is idempotent and safe for concurrent use, and does not return until
+// shutdown is complete. The mutex should only be stopped once all locks have
+// been released and no lock requests are pending: any request still queued
+// when Stop is called can never be granted, and will be woken into a panic
+// rather than left blocked forever.
 func (m *RWMutex) Stop() {
-	if m.initialised.Load() {
+	// A mutex that was never initialised via New (e.g. a zero value) has
+	// nothing to stop.
+	if m.stopped == nil {
+		return
+	}
+
+	// Only the first call sends the stop signal; every call waits for the
+	// shutdown to complete.
+	if m.stopping.CompareAndSwap(false, true) {
 		m.stopProcessing <- struct{}{}
 	}
+
+	<-m.stopped
 }
 
 // process - handles the batching and granting of the lock requests
@@ -327,17 +357,53 @@ func (m *RWMutex) process() {
 	}
 }
 
-// cleanup - marks the mutex as no longer usable; this is only run after the
-// process method has finished, and that is triggered by calling the Stop
-// method.
+// cleanup - marks the mutex as no longer usable, wakes any requesters whose
+// requests can now never be granted, and releases anyone blocked in an
+// unlock; this is only run after the process method has finished, and that is
+// triggered by calling the Stop method.
 //
 // The channels are deliberately not closed: closing frees no resources (an
 // unreferenced channel is garbage collected), and closing while a caller is
 // mid-send - a lock request racing with Stop - is a data race that panics the
-// sender. Callers that raced past the initialised check simply leave their
-// request in a queue that is never drained.
+// sender.
 func (m *RWMutex) cleanup() {
 	m.initialised.Store(false)
+
+	// Drain in two passes with a scheduler yield between them to also catch
+	// requesters that raced past the initialised check and were mid-send when
+	// the drain began. A requester whose send lands after the second pass is
+	// left blocked; the initialised check makes that window vanishingly
+	// small, but it cannot be fully closed with a finite drain.
+	for range 2 {
+
+	DRAIN_LOOP:
+		for {
+			select {
+
+			case request := <-m.exclusiveQueue:
+				request.aborted = true
+				request.c <- struct{}{}
+
+			case request := <-m.sharedQueue:
+				request.aborted = true
+				request.c <- struct{}{}
+
+			case u := <-m.releaseExclusive:
+				u <- struct{}{}
+
+			case u := <-m.releaseShared:
+				u <- struct{}{}
+
+			default:
+				break DRAIN_LOOP
+
+			}
+		}
+
+		runtime.Gosched()
+	}
+
+	close(m.stopped)
 }
 
 // -----------------------------------------------------------------------------
@@ -364,11 +430,17 @@ func (m *RWMutex) RLock() {
 		m.hasRQueueBeenExceeded.Store(true)
 	}
 
+	request := &lockRequest{c: r, n: 1}
+
 	// Request the lock
-	m.sharedQueue <- &lockRequest{c: r, n: 1}
+	m.sharedQueue <- request
 
 	// Wait for the lock to be granted
 	<-r
+
+	if request.aborted {
+		panic("fair-mutex: pending RLock request aborted by Stop")
+	}
 
 	m.histogram.Record(context.Background(), time.Since(start).Seconds(), metric.WithAttributeSet(m.rLockAttrs))
 }
@@ -435,11 +507,17 @@ func (m *RWMutex) Lock() {
 	r := make(chan struct{})
 	defer close(r)
 
+	request := &lockRequest{c: r, n: 1}
+
 	// Request the lock
-	m.exclusiveQueue <- &lockRequest{c: r, n: 1}
+	m.exclusiveQueue <- request
 
 	// Wait for the lock to be granted
 	<-r
+
+	if request.aborted {
+		panic("fair-mutex: pending Lock request aborted by Stop")
+	}
 
 	m.histogram.Record(context.Background(), time.Since(start).Seconds(), metric.WithAttributeSet(m.lockAttrs))
 }
@@ -557,11 +635,17 @@ func (m *RWMutex) RLockSet(number int) {
 	r := make(chan struct{})
 	defer close(r)
 
+	request := &lockRequest{c: r, n: number}
+
 	// Request the lock
-	m.sharedQueue <- &lockRequest{c: r, n: number}
+	m.sharedQueue <- request
 
 	// Wait for the lock to be granted
 	<-r
+
+	if request.aborted {
+		panic("fair-mutex: pending RLockSet request aborted by Stop")
+	}
 
 	m.histogram.Record(context.Background(), time.Since(start).Seconds(), metric.WithAttributeSet(m.rLockSetAttrs))
 }

@@ -85,23 +85,13 @@ type RWMutex struct {
 	// are being held).
 	waitingOnShared atomic.Bool
 
-	// HasQueueBeenExceeded - true if the capacity of the write lock queue has
-	// been filled to the point of probable overflow.
-	//
-	// While this is not an absolute indicator that request ordering has not
-	// been able to be maintained due to the number of lock requests being
-	// queued, it is a very strong indicator that the queue size might need to
-	// be increased in order to maintain lock request ordering.
-	HasQueueBeenExceeded bool
+	// True if the capacity of the write lock queue has been filled to the
+	// point of probable overflow. Exposed via HasQueueBeenExceeded.
+	hasQueueBeenExceeded atomic.Bool
 
-	// HasRQueueBeenExceeded - true if the capacity of the read lock queue has
-	// been filled to the point of probable overflow.
-	//
-	// While this is not an absolute indicator that request ordering has not
-	// been able to be maintained due to the number of lock requests being
-	// queued, it is a very strong indicator that the queue size might need to
-	// be increased in order to maintain lock request ordering.
-	HasRQueueBeenExceeded bool
+	// True if the capacity of the read lock queue has been filled to the
+	// point of probable overflow. Exposed via HasRQueueBeenExceeded.
+	hasRQueueBeenExceeded atomic.Bool
 }
 
 type lockRequest struct {
@@ -337,16 +327,17 @@ func (m *RWMutex) process() {
 	}
 }
 
-// cleanup - ensures that we don't have any resource leakage; however, this is
-// only run after the process method has finished, and that is triggered be
-// calling the Stop method.
+// cleanup - marks the mutex as no longer usable; this is only run after the
+// process method has finished, and that is triggered by calling the Stop
+// method.
+//
+// The channels are deliberately not closed: closing frees no resources (an
+// unreferenced channel is garbage collected), and closing while a caller is
+// mid-send - a lock request racing with Stop - is a data race that panics the
+// sender. Callers that raced past the initialised check simply leave their
+// request in a queue that is never drained.
 func (m *RWMutex) cleanup() {
 	m.initialised.Store(false)
-
-	close(m.exclusiveQueue)
-	close(m.sharedQueue)
-	close(m.releaseExclusive)
-	close(m.releaseShared)
 }
 
 // -----------------------------------------------------------------------------
@@ -369,8 +360,8 @@ func (m *RWMutex) RLock() {
 	defer close(r)
 
 	// Record if the queue has exceeded capacity (or is likely to exceed capacity).
-	if !m.HasRQueueBeenExceeded && len(m.sharedQueue) == m.config.sharedMaxQueueSize {
-		m.HasRQueueBeenExceeded = true
+	if !m.hasRQueueBeenExceeded.Load() && len(m.sharedQueue) == m.config.sharedMaxQueueSize {
+		m.hasRQueueBeenExceeded.Store(true)
 	}
 
 	// Request the lock
@@ -437,8 +428,8 @@ func (m *RWMutex) Lock() {
 	start := time.Now()
 
 	// Record if the queue has exceeded capacity (or is likely to exceed capacity).
-	if !m.HasQueueBeenExceeded && len(m.exclusiveQueue) == m.config.exclusiveMaxQueueSize {
-		m.HasQueueBeenExceeded = true
+	if !m.hasQueueBeenExceeded.Load() && len(m.exclusiveQueue) == m.config.exclusiveMaxQueueSize {
+		m.hasQueueBeenExceeded.Store(true)
 	}
 
 	r := make(chan struct{})
@@ -573,4 +564,26 @@ func (m *RWMutex) RLockSet(number int) {
 	<-r
 
 	m.histogram.Record(context.Background(), time.Since(start).Seconds(), metric.WithAttributeSet(m.rLockSetAttrs))
+}
+
+// HasQueueBeenExceeded - reports whether the capacity of the write lock queue
+// has been filled to the point of probable overflow.
+//
+// While this is not an absolute indicator that request ordering has not been
+// able to be maintained due to the number of lock requests being queued, it
+// is a very strong indicator that the queue size might need to be increased
+// in order to maintain lock request ordering.
+func (m *RWMutex) HasQueueBeenExceeded() bool {
+	return m.hasQueueBeenExceeded.Load()
+}
+
+// HasRQueueBeenExceeded - reports whether the capacity of the read lock queue
+// has been filled to the point of probable overflow.
+//
+// While this is not an absolute indicator that request ordering has not been
+// able to be maintained due to the number of lock requests being queued, it
+// is a very strong indicator that the queue size might need to be increased
+// in order to maintain lock request ordering.
+func (m *RWMutex) HasRQueueBeenExceeded() bool {
+	return m.hasRQueueBeenExceeded.Load()
 }

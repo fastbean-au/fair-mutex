@@ -22,7 +22,7 @@ This implementation can be used as a *functional* drop-in replacement for Go's [
 
 In addition to supporting the methods provided by `sync.RWMutex`, a helper method `RLockSet(int)` is provided to facilitate requesting a set of read locks in a single batch.
 
-Two properties, `HasQueueBeenExceeded` and `HasRQueueBeenExceeded` are also made available to assist in identifying when ordering guarantees have not been able to be maintained with the configuration of queue sizes used. If lock request ordering is significant for you, you may wish to check one or both of these properties  as applicable either periodically, or at the conclusion of using the mutex to determine if queue sizes need to be increased.
+Two methods, `HasQueueBeenExceeded()` and `HasRQueueBeenExceeded()`, are also made available to assist in identifying when ordering guarantees have not been able to be maintained with the configuration of queue sizes used. If lock request ordering is significant for you, you may wish to check one or both of these methods as applicable either periodically, or at the conclusion of using the mutex to determine if queue sizes need to be increased.
 
 ## How it works
 

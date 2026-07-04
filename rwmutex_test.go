@@ -407,13 +407,18 @@ func TestFairMutexBasicOperations(t *testing.T) {
 
 		out := make([]int, 0, 1000)
 
+		var wg sync.WaitGroup
+
 		// Lock the mutex initially to allow lock requests to be queued
 		m.Lock()
 
 		for i := 0; i < 1000; i++ {
 			<-time.After(time.Millisecond) // Ensure that the funcs start in the correct order
 
+			wg.Add(1)
 			go func() {
+				defer wg.Done()
+
 				m.Lock()
 				defer m.Unlock()
 
@@ -423,8 +428,8 @@ func TestFairMutexBasicOperations(t *testing.T) {
 
 		m.Unlock()
 
-		// Wait here for a bit to allow the go funcs to acquire and release the locks
-		<-time.After(time.Second)
+		// Wait for the go funcs to acquire and release the locks
+		wg.Wait()
 
 		for i, v := range out {
 			if i != v {
@@ -441,13 +446,18 @@ func TestFairMutexBasicOperations(t *testing.T) {
 
 		out := make([]int, 0, 1000)
 
+		var wg sync.WaitGroup
+
 		// Lock the mutex initially to allow lock requests to be queued
 		m.Lock()
 
 		for i := 0; i < 1000; i++ {
 			<-time.After(time.Millisecond) // Ensure that the funcs start in the correct order
 
+			wg.Add(1)
 			go func() {
+				defer wg.Done()
+
 				m.Lock()
 				defer m.Unlock()
 
@@ -457,8 +467,8 @@ func TestFairMutexBasicOperations(t *testing.T) {
 
 		m.Unlock()
 
-		// Wait here for a bit to allow the go funcs to acquire and release the locks
-		<-time.After(time.Second)
+		// Wait for the go funcs to acquire and release the locks
+		wg.Wait()
 
 		for i := 0; i < 256; i++ {
 			if i != out[i] {
@@ -476,13 +486,18 @@ func TestFairMutexBasicOperations(t *testing.T) {
 
 		out := make([]int, 0, 1000)
 
+		var wg sync.WaitGroup
+
 		// Lock the mutex initially to allow lock requests to be queued
 		m.Lock()
 
 		for i := 0; i < 1000; i++ {
 			<-time.After(time.Millisecond) // Ensure that the funcs start in the correct order
 
+			wg.Add(1)
 			go func() {
+				defer wg.Done()
+
 				m.RLock()
 				defer m.RUnlock()
 
@@ -493,8 +508,8 @@ func TestFairMutexBasicOperations(t *testing.T) {
 
 		m.Unlock()
 
-		// Wait here for a bit to allow the go funcs to acquire and release the locks
-		<-time.After(time.Second)
+		// Wait for the go funcs to acquire and release the locks
+		wg.Wait()
 
 		for i, v := range out {
 			if i != v {
@@ -507,7 +522,7 @@ func TestFairMutexBasicOperations(t *testing.T) {
 		m := New(WithMaxReadQueueSize(5))
 		defer m.Stop()
 
-		if m.HasRQueueBeenExceeded {
+		if m.HasRQueueBeenExceeded() {
 			t.Fatal("HasRQueueBeenExceeded is true with no RLock queued")
 		}
 
@@ -529,7 +544,7 @@ func TestFairMutexBasicOperations(t *testing.T) {
 		// Delay to allow the request above to be executed
 		<- time.After(time.Millisecond*5)
 
-		if m.HasRQueueBeenExceeded {
+		if m.HasRQueueBeenExceeded() {
 			t.Fatal("HasRQueueBeenExceeded is true with RLock queued")
 		}
 
@@ -544,7 +559,7 @@ func TestFairMutexBasicOperations(t *testing.T) {
 		// Delay to allow the request above to be executed
 		<- time.After(time.Millisecond*5)
 
-		if !m.HasRQueueBeenExceeded {
+		if !m.HasRQueueBeenExceeded() {
 			t.Fatal("HasRQueueBeenExceeded is false with RLock queue exceeded")
 		}
 
@@ -560,7 +575,7 @@ func TestFairMutexBasicOperations(t *testing.T) {
 		m := New(WithMaxWriteQueueSize(5))
 		defer m.Stop()
 
-		if m.HasQueueBeenExceeded {
+		if m.HasQueueBeenExceeded() {
 			t.Fatal("HasQueueBeenExceeded is true with no Lock queued")
 		}
 
@@ -582,7 +597,7 @@ func TestFairMutexBasicOperations(t *testing.T) {
 		// Delay to allow the request above to be executed
 		<- time.After(time.Millisecond*5)
 
-		if m.HasQueueBeenExceeded {
+		if m.HasQueueBeenExceeded() {
 			t.Fatal("HasQueueBeenExceeded is true with Lock queued")
 		}
 
@@ -606,7 +621,7 @@ func TestFairMutexBasicOperations(t *testing.T) {
 		// released, and the final lock to get into the queue.
 		<- time.After(time.Second)
 
-		if !m.HasQueueBeenExceeded {
+		if !m.HasQueueBeenExceeded() {
 			t.Fatal("HasQueueBeenExceeded is false with Lock queue exceeded")
 		}
 	})
@@ -967,11 +982,11 @@ func TestTryLockDoesNotRecordQueueExceeded(t *testing.T) {
 
 	m.Unlock()
 
-	if m.HasQueueBeenExceeded {
+	if m.HasQueueBeenExceeded() {
 		t.Error("TryLock recorded the write queue as exceeded on a free mutex")
 	}
 
-	if m.HasRQueueBeenExceeded {
+	if m.HasRQueueBeenExceeded() {
 		t.Error("TryLock recorded the read queue as exceeded on a free mutex")
 	}
 }
@@ -1041,4 +1056,39 @@ func TestTryLocksDoNotBlock(t *testing.T) {
 
 		m.Stop()
 	}
+}
+
+// TestQueueExceededFlagsAreRaceFree - exposes the data race on the queue
+// exceeded flags: they were plain bools written by every concurrent RLock and
+// Lock caller and readable by any other goroutine. This test fails under the
+// race detector against the unfixed code.
+func TestQueueExceededFlagsAreRaceFree(t *testing.T) {
+	m := New(WithMaxReadQueueSize(2), WithMaxWriteQueueSize(2))
+	defer m.Stop()
+
+	var wg sync.WaitGroup
+
+	for i := range 16 {
+		exclusive := i%2 == 0
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			for range 200 {
+				if exclusive {
+					m.Lock()
+					m.Unlock()
+				} else {
+					m.RLock()
+					m.RUnlock()
+				}
+
+				_ = m.HasQueueBeenExceeded()
+				_ = m.HasRQueueBeenExceeded()
+			}
+		}()
+	}
+
+	wg.Wait()
 }

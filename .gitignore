@@ -35,3 +35,4 @@ release.txt
 bench.out
 tables.md
 .venv/
+coverage_detail.html

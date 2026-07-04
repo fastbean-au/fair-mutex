@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # The analyzer's testdata is deliberately excluded: it contains example
+      # code that is not required to be gofmt-clean.
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l . | grep -v '/testdata/' || true)
+          if [ -n "$unformatted" ]; then
+            echo "gofmt required for:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      # The race detector is a hard requirement for this repository: the
+      # mutex's correctness guarantees are exactly the kind that races erode.
+      - name: Test (race detector)
+        run: go test -race -count=1 -covermode=atomic -coverprofile=coverage.out ./...
+
+      # A short race-checked pass over the benchmark suite so that data races
+      # cannot creep back into the benchmarks themselves.
+      - name: Benchmark smoke test (race detector)
+        run: go test -race -run '^$' -bench . -benchtime=5x -timeout=20m ./benchmarking/
+
+      # Coverage upload is best-effort: a Coveralls outage or configuration
+      # problem must not block the build.
+      - name: Upload coverage to Coveralls
+        uses: coverallsapp/github-action@v2
+        continue-on-error: true
+        with:
+          file: coverage.out
+          format: golang

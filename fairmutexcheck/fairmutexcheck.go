@@ -57,7 +57,7 @@ func checkDirectInstantiation(pass *analysis.Pass) {
 						}
 					}
 				}
-				
+
 			}
 
 			return true

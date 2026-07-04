@@ -560,7 +560,7 @@ func TestFairMutexBasicOperations(t *testing.T) {
 		}
 
 		// Delay to allow the request above to be executed
-		<- time.After(time.Millisecond*5)
+		<-time.After(time.Millisecond * 5)
 
 		if m.HasRQueueBeenExceeded() {
 			t.Fatal("HasRQueueBeenExceeded is true with RLock queued")
@@ -575,7 +575,7 @@ func TestFairMutexBasicOperations(t *testing.T) {
 		}()
 
 		// Delay to allow the request above to be executed
-		<- time.After(time.Millisecond*5)
+		<-time.After(time.Millisecond * 5)
 
 		if !m.HasRQueueBeenExceeded() {
 			t.Fatal("HasRQueueBeenExceeded is false with RLock queue exceeded")
@@ -586,7 +586,7 @@ func TestFairMutexBasicOperations(t *testing.T) {
 
 		wg.Wait()
 
-		<- time.After(time.Millisecond*5)
+		<-time.After(time.Millisecond * 5)
 	})
 
 	t.Run("TestLockQueueExceeded", func(t *testing.T) {
@@ -613,7 +613,7 @@ func TestFairMutexBasicOperations(t *testing.T) {
 		}
 
 		// Delay to allow the request above to be executed
-		<- time.After(time.Millisecond*5)
+		<-time.After(time.Millisecond * 5)
 
 		if m.HasQueueBeenExceeded() {
 			t.Fatal("HasQueueBeenExceeded is true with Lock queued")
@@ -628,7 +628,7 @@ func TestFairMutexBasicOperations(t *testing.T) {
 		}()
 
 		// Delay to allow the request above to be executed
-		<- time.After(time.Millisecond*5)
+		<-time.After(time.Millisecond * 5)
 
 		// Release the lock to allow the read locks to be granted
 		m.RUnlock()
@@ -637,7 +637,7 @@ func TestFairMutexBasicOperations(t *testing.T) {
 
 		// We need to give time for the first batch of Locks to be granted and
 		// released, and the final lock to get into the queue.
-		<- time.After(time.Second)
+		<-time.After(time.Second)
 
 		if !m.HasQueueBeenExceeded() {
 			t.Fatal("HasQueueBeenExceeded is false with Lock queue exceeded")

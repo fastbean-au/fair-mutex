@@ -50,9 +50,8 @@ func HammerRWMutex(gomaxprocs, numReaders, num_iterations int) {
 	// Number of active readers + 10000 * number of active writers.
 	var activity int32
 	cdone := make(chan bool)
-		rwm := New()
+	rwm := New()
 	defer rwm.Stop()
-
 
 	go writer(rwm, num_iterations, &activity, cdone)
 	var i int
@@ -113,9 +112,8 @@ func TestRWMutex(t *testing.T) {
 }
 
 func benchmarkRWMutex(b *testing.B, localWork, writeRatio int) {
-		rwm := New()
+	rwm := New()
 	defer rwm.Stop()
-
 
 	b.RunParallel(func(pb *testing.PB) {
 		foo := 0

@@ -411,7 +411,11 @@ func (m *RWMutex) RLock() {
 
 	start := time.Now()
 
-	r := make(chan struct{})
+	// Buffered so that the processor can grant the lock without waiting for
+	// this goroutine to be scheduled to receive; in a large shared batch this
+	// lets the processor fire every grant back-to-back and the requesters
+	// wake in parallel.
+	r := make(chan struct{}, 1)
 	defer close(r)
 
 	// Record if the queue has exceeded capacity (or is likely to exceed capacity).
@@ -451,7 +455,11 @@ func (m *RWMutex) TryRLock() bool {
 		return false
 	}
 
-	r := make(chan struct{})
+	// Buffered so that the processor can grant the lock without waiting for
+	// this goroutine to be scheduled to receive; in a large shared batch this
+	// lets the processor fire every grant back-to-back and the requesters
+	// wake in parallel.
+	r := make(chan struct{}, 1)
 	defer close(r)
 
 	return m.tryRequest(m.tryShared, &lockRequest{c: r, n: 1})
@@ -493,7 +501,11 @@ func (m *RWMutex) Lock() {
 		m.hasQueueBeenExceeded.Store(true)
 	}
 
-	r := make(chan struct{})
+	// Buffered so that the processor can grant the lock without waiting for
+	// this goroutine to be scheduled to receive; in a large shared batch this
+	// lets the processor fire every grant back-to-back and the requesters
+	// wake in parallel.
+	r := make(chan struct{}, 1)
 	defer close(r)
 
 	request := &lockRequest{c: r, n: 1}
@@ -528,7 +540,11 @@ func (m *RWMutex) TryLock() bool {
 		return false
 	}
 
-	r := make(chan struct{})
+	// Buffered so that the processor can grant the lock without waiting for
+	// this goroutine to be scheduled to receive; in a large shared batch this
+	// lets the processor fire every grant back-to-back and the requesters
+	// wake in parallel.
+	r := make(chan struct{}, 1)
 	defer close(r)
 
 	return m.tryRequest(m.tryExclusive, &lockRequest{c: r, n: 1})
@@ -630,7 +646,11 @@ func (m *RWMutex) RLockSet(number int) {
 
 	start := time.Now()
 
-	r := make(chan struct{})
+	// Buffered so that the processor can grant the lock without waiting for
+	// this goroutine to be scheduled to receive; in a large shared batch this
+	// lets the processor fire every grant back-to-back and the requesters
+	// wake in parallel.
+	r := make(chan struct{}, 1)
 	defer close(r)
 
 	// Record if the queue has exceeded capacity (or is likely to exceed capacity).
